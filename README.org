@@ -1,0 +1,70 @@
+#+title: ergokv
+
+* ergokv
+
+A Rust library for easy integration with TiKV, providing derive macros for automatic CRUD operations.
+
+** Installation
+
+Add this to your =Cargo.toml=:
+
+#+BEGIN_SRC toml
+[dependencies]
+ergokv = { git = "https://github.com/luciumagn/ergokv" }
+#+END_SRC
+
+** Prerequisites
+
+- Rust (edition 2021 or later)
+- Protobuf
+- GRPC
+- TiKV (can be installed via TiUP)
+
+** Usage
+
+#+BEGIN_SRC rust
+use ergokv::Store;
+use serde::{Serialize, Deserialize};
+use uuid::Uuid;
+
+#[derive(Store, Serialize, Deserialize)]
+struct User {
+    #[key]
+    id: Uuid,
+    #[index]
+    username: String,
+    email: String,
+}
+
+// Now you can use methods like User::load(), User::save(), User::delete(), User::by_username()
+#+END_SRC
+
+** Testing
+
+To run tests, ensure you have TiUP installed and then use:
+
+#+BEGIN_SRC bash
+cargo test
+#+END_SRC
+
+Tests will automatically start and stop a TiKV instance using TiUP.
+
+** License
+
+This project is licensed under the Fair License:
+
+#+BEGIN_QUOTE
+Copyright (c) 2024 Lukáš Hozda
+
+Usage of the works is permitted provided that this instrument is retained with the works, so that any entity that uses the works is notified of this instrument.
+
+DISCLAIMER: THE WORKS ARE WITHOUT WARRANTY.
+#+END_QUOTE
+
+** Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+** GitHub Repository
+
+[[https://github.com/luciumagn/ergokv][github.com/luciumagn/ergokv]]
