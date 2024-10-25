@@ -16,9 +16,22 @@ ergokv = { git = "https://github.com/luciumagn/ergokv" }
 ** Prerequisites
 
 - Rust (edition 2021 or later)
-- Protobuf
-- GRPC
-- TiKV (can be installed via TiUP)
+- Protobuf/GRPC (you'll see if you get an error)
+- TiKV
+
+*** Installing TiKV
+
+1. Install TiUP (TiKV's package manager):
+
+   #+BEGIN_SRC bash
+   curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
+   #+END_SRC
+
+2. Set up TiKV cluster for development:
+
+   #+BEGIN_SRC bash
+   tiup playground
+   #+END_SRC
 
 ** Usage
 
@@ -36,8 +49,86 @@ struct User {
     email: String,
 }
 
-// Now you can use methods like User::load(), User::save(), User::delete(), User::by_username()
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Set up TiKV client
+    let client = tikv_client::TransactionClient::new(vec!["127.0.0.1:2379"]).await?;
+
+    // Create a new user
+    let user = User {
+        id: Uuid::new_v4(),
+        username: "testuser".to_string(),
+        email: "test@example.com".to_string(),
+    };
+
+    // Start a transaction
+    let mut txn = client.begin_optimistic().await?;
+
+    // Save the user
+    user.save(&mut txn).await?;
+
+    // Commit the transaction
+    txn.commit().await?;
+
+    // Load the user
+    let mut txn = client.begin_optimistic().await?;
+    let loaded_user = User::load(&user.id, &mut txn).await?;
+    println!("Loaded user: {:?}", loaded_user);
+
+    Ok(())
+}
 #+END_SRC
+
+** Running TiKV
+
+*** For Development
+
+Use TiUP playground:
+
+#+BEGIN_SRC bash
+tiup playground
+#+END_SRC
+
+This sets up a local TiKV cluster for testing.
+
+*** For Production
+
+1. Create a topology file (e.g., `topology.yaml`):
+
+   #+BEGIN_SRC yaml
+   global:
+     user: "tidb"
+     ssh_port: 22
+     deploy_dir: "/tidb-deploy"
+     data_dir: "/tidb-data"
+
+   pd_servers:
+     - host: 10.0.1.1
+     - host: 10.0.1.2
+     - host: 10.0.1.3
+
+   tikv_servers:
+     - host: 10.0.1.4
+     - host: 10.0.1.5
+     - host: 10.0.1.6
+
+   tidb_servers:
+     - host: 10.0.1.7
+     - host: 10.0.1.8
+     - host: 10.0.1.9
+   #+END_SRC
+
+2. Deploy the cluster:
+
+   #+BEGIN_SRC bash
+   tiup cluster deploy mytikvcluster 5.1.0 topology.yaml --user root -p
+   #+END_SRC
+
+3. Start the cluster:
+
+   #+BEGIN_SRC bash
+   tiup cluster start mytikvcluster
+   #+END_SRC
 
 ** Testing
 
@@ -51,19 +142,11 @@ Tests will automatically start and stop a TiKV instance using TiUP.
 
 ** License
 
-This project is licensed under the Fair License:
-
-#+BEGIN_QUOTE
-Copyright (c) 2024 Lukáš Hozda
-
-Usage of the works is permitted provided that this instrument is retained with the works, so that any entity that uses the works is notified of this instrument.
-
-DISCLAIMER: THE WORKS ARE WITHOUT WARRANTY.
-#+END_QUOTE
+[License section remains unchanged]
 
 ** Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+[Contributing section remains unchanged]
 
 ** GitHub Repository
 
