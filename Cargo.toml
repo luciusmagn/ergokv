@@ -5,6 +5,7 @@ edition = "2021"
 description = "Easily store and retrieve data from TiKV with a derive"
 license = "Fair"
 repository = "https://github.com/luciusmagn/ergokv"
+documentation = "https://docs.rs/ergokv"
 
 [lib]
 proc-macro = true
