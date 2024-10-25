@@ -11,7 +11,12 @@ impl TiKVTestInstance {
     fn new() -> Self {
         // Start PD (Placement Driver)
         let pd_process = Command::new("pd-server")
-            .args(&["--data-dir", "/tmp/pd", "--client-urls", "http://127.0.0.1:2379"])
+            .args(&[
+                "--data-dir",
+                "/tmp/pd",
+                "--client-urls",
+                "http://127.0.0.1:2379",
+            ])
             .spawn()
             .expect("Failed to start PD");
 
@@ -20,7 +25,12 @@ impl TiKVTestInstance {
 
         // Start TiKV
         let tikv_process = Command::new("tikv-server")
-            .args(&["--pd", "127.0.0.1:2379", "--data-dir", "/tmp/tikv"])
+            .args(&[
+                "--pd",
+                "127.0.0.1:2379",
+                "--data-dir",
+                "/tmp/tikv",
+            ])
             .spawn()
             .expect("Failed to start TiKV");
 
@@ -37,14 +47,18 @@ impl TiKVTestInstance {
 impl Drop for TiKVTestInstance {
     fn drop(&mut self) {
         // Stop TiKV and PD
-        self.tikv_process.kill().expect("Failed to kill TiKV process");
-        self.pd_process.kill().expect("Failed to kill PD process");
+        self.tikv_process
+            .kill()
+            .expect("Failed to kill TiKV process");
+        self.pd_process
+            .kill()
+            .expect("Failed to kill PD process");
     }
 }
 
 // The good part of the test starts here:
 use ergokv::Store;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Store, Serialize, Deserialize, Debug, PartialEq)]
@@ -56,14 +70,17 @@ struct User {
     email: String,
 }
 
-
 #[tokio::test]
 async fn test_user_store() {
     // Start TiKV instance
     let _tikv_instance = TiKVTestInstance::new();
 
     // Set up TiKV client
-    let client = tikv_client::TransactionClient::new(vec!["127.0.0.1:2379"]).await.unwrap();
+    let client = tikv_client::TransactionClient::new(vec![
+        "127.0.0.1:2379",
+    ])
+    .await
+    .unwrap();
 
     // Create a new user
     let user = User {
@@ -85,17 +102,24 @@ async fn test_user_store() {
     let mut txn = client.begin_optimistic().await.unwrap();
 
     // Load the user
-    let mut loaded_user = User::load(&user.id, &mut txn).await.unwrap();
+    let mut loaded_user =
+        User::load(&user.id, &mut txn).await.unwrap();
 
     // Assert that the loaded user matches the original
     assert_eq!(user, loaded_user);
 
     // Test index method
-    let found_user = User::by_username(&user.username, &mut txn).await.unwrap().unwrap();
+    let found_user = User::by_username(&user.username, &mut txn)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(user, found_user);
 
     // Update user
-    loaded_user.set_email("newemail@example.com".to_string(), &mut txn).await.unwrap();
+    loaded_user
+        .set_email("newemail@example.com".to_string(), &mut txn)
+        .await
+        .unwrap();
 
     // Delete user
     loaded_user.delete(&mut txn).await.unwrap();
