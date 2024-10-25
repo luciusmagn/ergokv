@@ -202,6 +202,7 @@ There is a lot of things that could be improved:
 - Add methods that retrieve multiple structures, to make it useful to e.g. fetch
   entities like articles and all users (note that this can be done already by manually making
   a sort of entity registry for yourself)
+- Remove Display requirement by making the `if` for indexed fields more intelligent
 
 ** GitHub Repository
 
