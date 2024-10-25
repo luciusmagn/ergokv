@@ -8,7 +8,7 @@ Add this to your =Cargo.toml=:
 
 #+BEGIN_SRC toml
 [dependencies]
-ergokv = { git = "https://github.com/luciumagn/ergokv" }
+ergokv = "0.1.0"
 #+END_SRC
 
 ** Prerequisites
