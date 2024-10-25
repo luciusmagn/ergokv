@@ -1,7 +1,5 @@
 #+title: ergokv
 
-* ergokv
-
 A Rust library for easy integration with TiKV, providing derive macros for automatic CRUD operations.
 
 ** Installation
