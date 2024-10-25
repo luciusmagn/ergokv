@@ -57,7 +57,7 @@ fn generate_load_method(
                 let key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), key, stringify!(#field_name));
                 let value = txn.get(key.clone()).await?
                     .ok_or_else(|| tikv_client::Error::StringError(key.clone()))?;
-                serde_cbor::from_slice(&value)
+                ::ciborium::de::from_reader(value.as_slice())
                     .map_err(|e| tikv_client::Error::StringError(format!("Failed to decode {}: {}", stringify!(#field_name), e)))?
             };
         }
@@ -94,7 +94,8 @@ fn generate_save_method(
         let field_name = &f.ident;
         quote! {
             let key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), self.#key_ident, stringify!(#field_name));
-            let value = serde_cbor::to_vec(&self.#field_name)
+            let mut value = Vec::new();
+            ::ciborium::ser::into_writer(&self.#field_name, &mut value)
                 .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode {}: {}", stringify!(#field_name), e)))?;
             txn.put(key, value).await?;
         }
@@ -106,7 +107,8 @@ fn generate_save_method(
             let field_name = &f.ident;
             quote! {
                 let index_key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), stringify!(#field_name), self.#field_name);
-                let value = serde_cbor::to_vec(&self.#key_ident)
+                let mut value = Vec::new();
+                ::ciborium::ser::into_writer(&self.#key_ident, &mut value)
                     .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode {}: {}", stringify!(#field_name), e)))?;
                 txn.put(index_key, value).await?;
             }
@@ -174,11 +176,9 @@ fn generate_index_methods(
             quote! {
                 pub async fn #method_name(value: &#field_type, client: &mut tikv_client::Transaction) -> Result<Option<Self>, tikv_client::Error> {
                     let index_key = dbg!(format!("{}:{}:{}", stringify!(#name).to_lowercase(), stringify!(#field_name), value));
-                    if let Some(key) = client
-                        .get(index_key)
-                        .await?
-                        .and_then(|key| serde_cbor::from_slice(&key).ok())
-                    {
+                    if let Some(key_bytes) = client.get(index_key).await? {
+                        let key = ::ciborium::de::from_reader(key_bytes.as_slice())
+                            .map_err(|e| tikv_client::Error::StringError(format!("Failed to decode key: {}", e)))?;
                         Self::load(&key, client).await.map(Some)
                     } else {
                         Ok(None)
@@ -189,7 +189,6 @@ fn generate_index_methods(
         .collect()
 }
 
-// TODO: forbid changing the ID
 fn generate_set_methods(
     name: &Ident,
     fields: &Punctuated<Field, Comma>,
@@ -216,14 +215,18 @@ fn generate_set_methods(
 
                 // Save updated field
                 let key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), self.#key_ident, stringify!(#field_name));
-                let value = serde_cbor::to_vec(&self.#field_name)
+                let mut value = Vec::new();
+                ::ciborium::ser::into_writer(&self.#field_name, &mut value)
                     .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode {}: {}", stringify!(#field_name), e)))?;
                 txn.put(key, value).await?;
 
                 if #is_indexed {
                     // Add new index
                     let new_index_key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), stringify!(#field_name), self.#field_name);
-                    txn.put(new_index_key, self.#key_ident.to_string()).await?;
+                    let mut value = Vec::new();
+                    ::ciborium::ser::into_writer(&self.#key_ident, &mut value)
+                        .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode key: {}", e)))?;
+                    txn.put(new_index_key, value).await?;
                 }
 
                 Ok(())

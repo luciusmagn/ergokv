@@ -10,10 +10,10 @@ proc-macro = true
 quote = "1.0.37"
 syn = "2.0.83"
 proc-macro2 = "1.0"
+ciborium = "0.2.2"
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["full"] }
 tikv-client = "0.3"
 serde = { version = "1.0", features = ["derive"] }
-serde_cbor = "0.11"
 uuid = { version = "1.0", features = ["v4", "serde"] }
