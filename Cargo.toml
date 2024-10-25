@@ -2,6 +2,9 @@
 name = "ergokv"
 version = "0.1.0"
 edition = "2021"
+description = "Easily store and retrieve data from TiKV with a derive"
+license = "Fair"
+repository = "https://github.com/luciusmagn/ergokv"
 
 [lib]
 proc-macro = true
