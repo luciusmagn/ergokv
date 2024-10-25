@@ -1,3 +1,34 @@
+//! # ergokv
+//!
+//! `ergokv` is a library for easy integration with TiKV, providing derive macros for automatic CRUD operations.
+//!
+//! ## Usage
+//!
+//! Add this to your `Cargo.toml`:
+//!
+//! ```toml
+//! [dependencies]
+//! ergokv = "0.1"
+//! ```
+//!
+//! Then, in your Rust file:
+//!
+//! ```rust
+//! use ergokv::Store;
+//! use serde::{Serialize, Deserialize};
+//! use uuid::Uuid;
+//!
+//! #[derive(Store, Serialize, Deserialize)]
+//! struct User {
+//!     #[key]
+//!     id: Uuid,
+//!     #[index]
+//!     username: String,
+//!     email: String,
+//! }
+//! ```
+//!
+//! This will generate `load`, `save`, `delete`, `by_username`, `set_username`, and `set_email` methods for `User`.
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
@@ -6,6 +37,36 @@ use syn::{
     Data, DeriveInput, Field, Fields, Ident,
 };
 
+/// Derives the `Store` trait for a struct, generating methods for CRUD operations in TiKV.
+///
+/// This macro will generate the following methods:
+/// - `load`: Loads an instance from TiKV.
+/// - `save`: Saves the instance to TiKV.
+/// - `delete`: Deletes the instance from TiKV.
+/// - `by_<field>`: For each indexed field, generates a method to find an instance by that field.
+/// - `set_<field>`: For each field, generates a method to update that field.
+///
+/// # Attributes
+///
+/// - `#[key]`: Marks a field as the primary key. Required on exactly one field.
+/// - `#[index]`: Marks a field as indexed, allowing efficient lookups.
+///
+/// # Example
+///
+/// ```rust
+/// use ergokv::Store;
+/// use serde::{Serialize, Deserialize};
+/// use uuid::Uuid;
+///
+/// #[derive(Store, Serialize, Deserialize)]
+/// struct User {
+///     #[key]
+///     id: Uuid,
+///     #[index]
+///     username: String,
+///     email: String,
+/// }
+/// ```
 #[proc_macro_derive(Store, attributes(store, key, index))]
 pub fn derive_store(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -69,6 +130,9 @@ fn generate_load_method(
     });
 
     quote! {
+        #[doc = concat!("Load a ", stringify!(#name), " from the database.")]
+        #[doc = ""]
+        #[doc = "This method retrieves the object from TiKV using the provided key."]
         pub async fn load(key: &#key_type, txn: &mut tikv_client::Transaction) -> Result<Self, tikv_client::Error> {
             #(#field_loads)*
             Ok(Self {
@@ -115,6 +179,9 @@ fn generate_save_method(
         });
 
     quote! {
+        #[doc = concat!("Save this ", stringify!(#name), " to the database.")]
+        #[doc = ""]
+        #[doc = "This method stores the object in TiKV, including any indexed fields."]
         pub async fn save(&self, txn: &mut tikv_client::Transaction) -> Result<(), tikv_client::Error> {
             #(#field_saves)*
             #(#index_saves)*
@@ -154,6 +221,9 @@ fn generate_delete_method(
         });
 
     quote! {
+        #[doc = concat!("Delete this ", stringify!(#name), " from the database.")]
+        #[doc = ""]
+        #[doc = "This method removes the object from TiKV, including any indexed fields."]
         pub async fn delete(&self, txn: &mut tikv_client::Transaction) -> Result<(), tikv_client::Error> {
             #(#field_deletes)*
             #(#index_deletes)*
@@ -174,8 +244,11 @@ fn generate_index_methods(
             let method_name = format_ident!("by_{}", field_name.clone().expect("Missing field name"));
 
             quote! {
+                #[doc = concat!("Find a ", stringify!(#name), " by its ", stringify!(#field_name), " field.")]
+                #[doc = ""]
+                #[doc = concat!("This method uses the index on the ", stringify!(#field_name), " field to efficiently retrieve the object.")]
                 pub async fn #method_name(value: &#field_type, client: &mut tikv_client::Transaction) -> Result<Option<Self>, tikv_client::Error> {
-                    let index_key = dbg!(format!("{}:{}:{}", stringify!(#name).to_lowercase(), stringify!(#field_name), value));
+                    let index_key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), stringify!(#field_name), value);
                     if let Some(key_bytes) = client.get(index_key).await? {
                         let key = ::ciborium::de::from_reader(key_bytes.as_slice())
                             .map_err(|e| tikv_client::Error::StringError(format!("Failed to decode key: {}", e)))?;
@@ -203,6 +276,9 @@ fn generate_set_methods(
         let key_ident = &key_field.ident;
 
         quote! {
+            #[doc = concat!("Update the ", stringify!(#field_name), " field of this ", stringify!(#name), ".")]
+            #[doc = ""]
+            #[doc = concat!("This method updates the ", stringify!(#field_name), " field in the database, maintaining any necessary indexes.")]
             pub async fn #method_name(&mut self, new_value: #field_type, txn: &mut tikv_client::Transaction) -> Result<(), tikv_client::Error> {
                 if #is_indexed {
                     // Remove old index
