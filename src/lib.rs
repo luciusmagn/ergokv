@@ -275,16 +275,29 @@ fn generate_set_methods(
             .expect("A field with #[key] attribute is required");
         let key_ident = &key_field.ident;
 
+        let index_ops = if is_indexed {
+            quote! {
+                // Remove old index
+                let old_index_key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), stringify!(#field_name), self.#field_name);
+                txn.delete(old_index_key).await?;
+
+                // Add new index after update
+                let new_index_key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), stringify!(#field_name), self.#field_name);
+                let mut value = Vec::new();
+                ::ciborium::ser::into_writer(&self.#key_ident, &mut value)
+                    .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode key: {}", e)))?;
+                txn.put(new_index_key, value).await?;
+            }
+        } else {
+            quote! {}
+        };
+
         quote! {
             #[doc = concat!("Update the ", stringify!(#field_name), " field of this ", stringify!(#name), ".")]
             #[doc = ""]
             #[doc = concat!("This method updates the ", stringify!(#field_name), " field in the database, maintaining any necessary indexes.")]
             pub async fn #method_name(&mut self, new_value: #field_type, txn: &mut tikv_client::Transaction) -> Result<(), tikv_client::Error> {
-                if #is_indexed {
-                    // Remove old index
-                    let old_index_key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), stringify!(#field_name), self.#field_name);
-                    txn.delete(old_index_key).await?;
-                }
+                #index_ops
 
                 // Update field
                 self.#field_name = new_value;
@@ -295,15 +308,6 @@ fn generate_set_methods(
                 ::ciborium::ser::into_writer(&self.#field_name, &mut value)
                     .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode {}: {}", stringify!(#field_name), e)))?;
                 txn.put(key, value).await?;
-
-                if #is_indexed {
-                    // Add new index
-                    let new_index_key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), stringify!(#field_name), self.#field_name);
-                    let mut value = Vec::new();
-                    ::ciborium::ser::into_writer(&self.#key_ident, &mut value)
-                        .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode key: {}", e)))?;
-                    txn.put(new_index_key, value).await?;
-                }
 
                 Ok(())
             }
