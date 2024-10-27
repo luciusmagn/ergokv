@@ -58,6 +58,10 @@ pub fn derive_store(input: TokenStream) -> TokenStream {
     let index_methods = generate_index_methods(name, fields);
     let set_methods = generate_set_methods(name, fields);
 
+    // TODO: Ensure key uniqueness by creating a known_keys object - HashSet? Have to think about how to make it scale - should probably be an encoded trie based on bytes I guess
+    // TODO: Add backup and restore functions
+    // TODO: Add unique_index, which is a field_value->ID mapping (this is currently index) and index, which is a field_value->Vec<ID> mapping
+    // TODO: Add search function, which queries a field by predicate -- think about if we can make this fast
     quote! {
         impl #name {
             #load_method
