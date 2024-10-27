@@ -90,7 +90,7 @@ fn generate_load_method(
                 let key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), key, stringify!(#field_name));
                 let value = txn.get(key.clone()).await?
                     .ok_or_else(|| tikv_client::Error::StringError(key.clone()))?;
-                ::ciborium::de::from_reader(value.as_slice())
+                ::ergokv::ciborium::de::from_reader(value.as_slice())
                     .map_err(|e| tikv_client::Error::StringError(format!("Failed to decode {}: {}", stringify!(#field_name), e)))?
             };
         }
@@ -131,7 +131,7 @@ fn generate_save_method(
         quote! {
             let key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), self.#key_ident, stringify!(#field_name));
             let mut value = Vec::new();
-            ::ciborium::ser::into_writer(&self.#field_name, &mut value)
+            ::ergokv::ciborium::ser::into_writer(&self.#field_name, &mut value)
                 .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode {}: {}", stringify!(#field_name), e)))?;
             txn.put(key, value).await?;
         }
@@ -144,7 +144,7 @@ fn generate_save_method(
             quote! {
                 let index_key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), stringify!(#field_name), self.#field_name);
                 let mut value = Vec::new();
-                ::ciborium::ser::into_writer(&self.#key_ident, &mut value)
+                ::ergokv::ciborium::ser::into_writer(&self.#key_ident, &mut value)
                     .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode {}: {}", stringify!(#field_name), e)))?;
                 txn.put(index_key, value).await?;
             }
@@ -222,7 +222,7 @@ fn generate_index_methods(
                 pub async fn #method_name(value: &#field_type, client: &mut tikv_client::Transaction) -> Result<Option<Self>, tikv_client::Error> {
                     let index_key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), stringify!(#field_name), value);
                     if let Some(key_bytes) = client.get(index_key).await? {
-                        let key = ::ciborium::de::from_reader(key_bytes.as_slice())
+                        let key = ::ergokv::ciborium::de::from_reader(key_bytes.as_slice())
                             .map_err(|e| tikv_client::Error::StringError(format!("Failed to decode key: {}", e)))?;
                         Self::load(&key, client).await.map(Some)
                     } else {
@@ -256,7 +256,7 @@ fn generate_set_methods(
                 // Add new index after update
                 let new_index_key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), stringify!(#field_name), self.#field_name);
                 let mut value = Vec::new();
-                ::ciborium::ser::into_writer(&self.#key_ident, &mut value)
+                ::ergokv::ciborium::ser::into_writer(&self.#key_ident, &mut value)
                     .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode key: {}", e)))?;
                 txn.put(new_index_key, value).await?;
             }
@@ -277,7 +277,7 @@ fn generate_set_methods(
                 // Save updated field
                 let key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), self.#key_ident, stringify!(#field_name));
                 let mut value = Vec::new();
-                ::ciborium::ser::into_writer(&self.#field_name, &mut value)
+                ::ergokv::ciborium::ser::into_writer(&self.#field_name, &mut value)
                     .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode {}: {}", stringify!(#field_name), e)))?;
                 txn.put(key, value).await?;
 

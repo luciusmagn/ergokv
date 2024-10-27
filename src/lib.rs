@@ -29,4 +29,7 @@
 //! ```
 //!
 //! This will generate `load`, `save`, `delete`, `by_username`, `set_username`, and `set_email` methods for `User`.
+
 pub use ergokv_macro::Store;
+
+pub use ciborium;
