@@ -1,5 +1,7 @@
 * ergokv
 
+=DISCLAIMER:= THIS IS ALPHA AS FUCK. (not yet suitable for production)
+
 A Rust library for easy integration with TiKV, providing derive macros for automatic CRUD operations.
 
 [[https://crates.io/crates/ergokv][https://img.shields.io/crates/v/ergokv.svg]]
