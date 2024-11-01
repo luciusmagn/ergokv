@@ -14,13 +14,12 @@
         pkgs = import nixpkgs {
           inherit system overlays;
         };
-        rustVersion = pkgs.rust-bin.nightly.latest.default;
+        rustVersion = pkgs.rust-bin.stable.latest.default;
       in
       {
         devShell = pkgs.mkShell {
           buildInputs = with pkgs; [
-            (rustVersion.override { extensions = [ "rust-src" ]; })
-            rust-analyzer
+            (rustVersion.override { extensions = [ "rust-src" "rust-analyzer" ]; })
             protobuf
             grpc
             pkg-config
