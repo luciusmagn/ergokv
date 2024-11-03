@@ -7,10 +7,12 @@
 //! The trie supports basic operations like insertion, removal, and retrieval,
 //! as well as prefix-based searches and streaming of all stored keys.
 //! All operations are performed within a TiKV transaction context.
-use async_stream::try_stream;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, SetPreventDuplicates};
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use tikv_client::{Error as TikvError, Transaction};
 
 use std::collections::HashSet;
@@ -196,29 +198,15 @@ impl PrefixTrie {
     /// Finds all keys in the trie that start with the given prefix.
     ///
     /// Returns a vector of matching keys in no particular order.
-    pub fn find_by_prefix<'a, 'b>(
-        &'a self,
+    pub fn find_by_prefix<'a>(
+        &self,
         txn: &'a mut Transaction,
-        prefix: &'b str,
-    ) -> impl Stream<Item = Result<String, TikvError>> + 'a {
-        let prefix = prefix.to_string();
-
-        try_stream! {
-            let mut queue = vec![prefix.to_string()];
-
-            while let Some(path) = queue.pop() {
-                if let Some(node) = self.get_node(txn, &path).await? {
-                    if let Some(key) = node.key {
-                        yield key;
-                    }
-
-                    for c in node.children {
-                        let mut child_path = path.clone();
-                        child_path.push(c);
-                        queue.push(child_path);
-                    }
-                }
-            }
+        prefix: &str,
+    ) -> PrefixTrieStream<'a> {
+        PrefixTrieStream {
+            prefix: self.prefix.clone(),
+            txn,
+            queue: vec![prefix.to_string()],
         }
     }
 
@@ -226,33 +214,27 @@ impl PrefixTrie {
     ///
     /// The keys are yielded in no particular order. This method is memory-efficient
     /// as it doesn't need to load all keys at once.
-    pub fn all<'a>(
-        &'a self,
+    pub async fn all<'a>(
+        &self,
         txn: &'a mut Transaction,
-    ) -> impl Stream<Item = Result<String, TikvError>> + 'a {
-        try_stream! {
-            let mut queue = Vec::new();
+    ) -> PrefixTrieStream<'a> {
+        let mut queue = Vec::new();
 
-            // Get root node's children
-            if let Some(root) = self.get_node(txn, "").await? {
-                for c in root.children {
-                    queue.push(c.to_string());
-                }
-            }
+        if let Some(data) =
+            txn.get(self.node_key("")).await.unwrap()
+        {
+            let root: TrieNode =
+                ciborium::de::from_reader(data.as_slice())
+                    .unwrap();
+            queue.extend(
+                root.children.into_iter().map(|c| c.to_string()),
+            );
+        }
 
-            while let Some(path) = queue.pop() {
-                if let Some(node) = self.get_node(txn, &path).await? {
-                    if let Some(key) = node.key {
-                        yield key;
-                    }
-
-                    for c in node.children {
-                        let mut child_path = path.clone();
-                        child_path.push(c);
-                        queue.push(child_path);
-                    }
-                }
-            }
+        PrefixTrieStream {
+            prefix: self.prefix.clone(),
+            txn,
+            queue,
         }
     }
 
@@ -312,6 +294,71 @@ impl PrefixTrie {
         }
 
         Ok(())
+    }
+}
+
+pub struct PrefixTrieStream<'a> {
+    prefix: String,
+    txn: &'a mut Transaction,
+    queue: Vec<String>,
+}
+
+impl<'a> Stream for PrefixTrieStream<'a> {
+    type Item = Result<String, TikvError>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        while let Some(path) = self.queue.pop() {
+            println!("clgeia");
+            let node_key =
+                format!("{}:trie:node:{}", self.prefix, path);
+
+            println!("clgeigxjka");
+            let txn = unsafe {
+                &mut *core::ptr::addr_of_mut!(self.txn)
+            };
+            println!("clgecieaieia");
+            let queue = unsafe {
+                &mut *core::ptr::addr_of_mut!(self.queue)
+            };
+
+            println!("siea");
+            let mut fut =
+                Box::pin(txn.get(node_key.into_bytes()));
+
+            println!("tsicahe");
+            match fut.as_mut().poll(cx) {
+                Poll::Ready(Ok(Some(data))) => {
+                    let node: TrieNode = ciborium::de::from_reader(data.as_slice())
+                        .map_err(|e| TikvError::StringError(format!("Deserialization failed: {e}")))?;
+
+                    if let Some(key) = node.key.clone() {
+                        for c in node.children {
+                            let mut child_path = path.clone();
+                            child_path.push(c);
+                            queue.push(child_path);
+                        }
+                        return Poll::Ready(Some(Ok(key)));
+                    }
+
+                    for c in node.children {
+                        let mut child_path = path.clone();
+                        child_path.push(c);
+                        queue.push(child_path);
+                    }
+                }
+                Poll::Ready(Ok(None)) => continue,
+                Poll::Ready(Err(e)) => {
+                    return Poll::Ready(Some(Err(e)))
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+
+        println!("dongler");
+        Poll::Ready(None)
     }
 }
 
@@ -486,7 +533,7 @@ mod tests {
 
         // Collect all keys and sort them for comparison
         let mut results = Vec::new();
-        let stream = trie.all(&mut txn);
+        let stream = trie.all(&mut txn).await;
 
         {
             futures::pin_mut!(stream);
