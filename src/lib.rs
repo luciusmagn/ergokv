@@ -36,11 +36,9 @@ pub use ciborium;
 pub use serde_json;
 
 mod local_cluster;
-mod model_stream;
 mod trie;
 
 pub use local_cluster::LocalCluster;
-pub use model_stream::ModelStream;
 pub use trie::PrefixTrie;
 
 /// Helper function to connect to a single or multiple TiKV pd-server

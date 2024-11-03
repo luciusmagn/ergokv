@@ -133,7 +133,13 @@ fn generate_load_method(
         let field_type = &f.ty;
         quote! {
             let #field_name: #field_type = {
-                let key = format!("ergokv:{}:{}:{}", Self::MODEL_NAME, key, stringify!(#field_name));
+                let key = format!(
+                    "ergokv:{}:{}:{}",
+                    Self::MODEL_NAME,
+                    ::ergokv::serde_json::to_string(&key)
+                        .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct key: {e}")))?,
+                    stringify!(#field_name)
+                );
                 let value = txn.get(key.clone()).await?
                     .ok_or_else(|| tikv_client::Error::StringError(key.clone()))?;
                 ::ergokv::ciborium::de::from_reader(value.as_slice())
@@ -395,32 +401,24 @@ fn generate_set_methods(
     }).collect()
 }
 
-// TODO: The keys, the prefixes, therein lies the problem
-//       The keys are now json, trie stores strings
 fn generate_all_method(key_field: &Field) -> TokenStream2 {
     let key_type = &key_field.ty;
 
     quote! {
-        pub fn all(
-            txn: &mut ::tikv_client::Transaction
-        ) -> ::ergokv::ModelStream<
-            Self,
-            impl Fn(&'static mut tikv_client::Transaction, String)
-                    -> std::pin::Pin<Box<dyn std::future::Future<Output=Result<Self, tikv_client::Error>>>>,
-            std::pin::Pin<Box<dyn ::std::future::Future<Output=Result<Self, tikv_client::Error>>>>
-        > {
-            ::ergokv::ModelStream::new(
-                format!("{}:", Self::MODEL_NAME),
-                txn,
-                |txn, key_str| Box::pin(async move {
-                    let key: #key_type = ::ergokv::serde_json::from_str(&key_str)
-                        .map_err(|e| ::tikv_client::Error::StringError(
-                            format!("Failed to decode key: {}", e)
-                        ))?;
+        pub fn all(txn: &mut tikv_client::Transaction) -> impl futures::Stream<Item = Result<Self, tikv_client::Error>> + '_ {
+            use futures::StreamExt;
+            let trie = ::ergokv::PrefixTrie::new("ergokv:__trie");
 
-                    dbg!(Self::load(&key, txn).await)
-                }) as std::pin::Pin<Box<dyn std::future::Future<Output=Result<Self, tikv_client::Error>>>>
-            )
+            async_stream::try_stream! {
+                let keys = trie.find_by_prefix(txn, Self::MODEL_NAME).await?;
+                for key in keys {
+                    if let Some(stripped) = key.strip_prefix(&format!("{}:", Self::MODEL_NAME)) {
+                        let key: #key_type = ::ergokv::serde_json::from_str(stripped)
+                            .map_err(|e| tikv_client::Error::StringError(format!("Failed to decode key: {}", e)))?;
+                        yield Self::load(&key, txn).await?;
+                    }
+                }
+            }
         }
     }
 }

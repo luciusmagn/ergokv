@@ -112,15 +112,13 @@ async fn test_user_all() {
     let mut txn = client.begin_optimistic().await.unwrap();
     let mut found_users = Vec::new();
 
-    println!("jongle");
-    let stream = User::all(&mut txn);
-    println!("ceai");
-    futures::pin_mut!(stream);
-    println!("htsn");
-    while let Some(Ok(user)) = stream.next().await {
-        found_users.push(user);
+    {
+        let stream = User::all(&mut txn);
+        futures::pin_mut!(stream);
+        while let Some(Ok(user)) = stream.next().await {
+            found_users.push(user);
+        }
     }
-    println!("binkler");
 
     // Sort both vectors by username for comparison
     let mut users = users.clone();
