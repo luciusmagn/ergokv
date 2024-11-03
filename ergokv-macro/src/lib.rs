@@ -41,7 +41,7 @@ use syn::{
 /// ```
 #[proc_macro_derive(
     Store,
-    attributes(store, key, index, migrate_from)
+    attributes(store, key, index, migrate_from, model_name)
 )]
 pub fn derive_store(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -85,7 +85,14 @@ pub fn derive_store(input: TokenStream) -> TokenStream {
         .map(|prev| generate_migration_trait(name, prev));
     let ensure_migrations = prev_type
         .as_ref()
-        .map(|prev| generate_ensure_migrations(name, prev));
+        .map_or(
+            quote! {
+                pub async fn ensure_migrations(_client: &::tikv_client::TransactionClient) -> Result<(), ::tikv_client::Error> {
+                    Ok(())
+                }
+            },
+            |prev| generate_ensure_migrations(name, prev)
+        );
 
     // TODO: Ensure key uniqueness by creating a known_keys object - HashSet? Have to think about how to make it scale - should probably be an encoded trie based on bytes I guess
     // TODO: Add backup and restore functions
@@ -463,34 +470,65 @@ fn generate_ensure_migrations(
         prev_type.segments.last().unwrap().ident,
         name
     );
+    let method_name = format_ident!(
+        "from_{}",
+        prev_type
+            .segments
+            .last()
+            .unwrap()
+            .ident
+            .to_string()
+            .to_lowercase()
+    );
 
     quote! {
         pub async fn ensure_migrations(client: &::tikv_client::TransactionClient) -> Result<(), ::tikv_client::Error> {
             let migrations_key = format!("{}:__migrations", Self::MODEL_NAME);
             let mut txn = client.begin_optimistic().await?;
 
-            let migrations: Vec<String> = if let Some(data) = txn.get(&migrations_key).await? {
-                ::ergokv::ciborium::de::from_reader(&data[..])?
+            let migrations: Vec<String> = if let Some(data) = txn.get(migrations_key.as_bytes().to_vec()).await? {
+                ::ergokv::ciborium::de::from_reader(&data[..])
+                    .map_err(|e| ::tikv_client::Error::StringError(format!("{e}")))?
             } else {
                 Vec::new()
             };
 
+            txn.commit().await?;
+
             if !migrations.contains(&#migration_name.to_string()) {
-                #prev_type::ensure_migrations(Self::MODEL_NAME, client).await?;
+                #prev_type::ensure_migrations(&client).await?;
 
                 let mut txn = client.begin_optimistic().await?;
-                let scan_prefix = format!("{}:*", Self::MODEL_NAME);
-                let prev_keys = txn.scan_keys(scan_prefix, None).await?;
+                let mut stream = Box::pin(#prev_type::all(&mut txn));
 
-                for key in prev_keys {
-                    let prev: #prev_type = #prev_type::load(&key, &mut txn).await?;
-                    let new = Self::from_prevtype(&prev)?;
-                    new.save(&mut txn).await?;
+                // TODO: We are saving over the old data, but unused fields may linger
+                {
+                    use ::ergokv::futures::StreamExt;
+                    let mut stream = stream;
+                    while let Some(Ok(prev_item)) = stream.next().await {
+                        let mut new_txn = client.begin_optimistic().await?;
+
+                        match Self::#method_name(&prev_item) {
+                            Ok(new) => {
+                                new.save(&mut new_txn).await?;
+                                new_txn.commit().await?;
+                            }
+                            e @ Err(_) => {
+                                new_txn.rollback().await?;
+                                e?;
+                            }
+                        };
+                    }
                 }
 
                 let mut new_migrations = migrations;
                 new_migrations.push(#migration_name.to_string());
-                txn.put(migrations_key, ::ergokv::ciborium::ser::into_writer(&new_migrations)?).await?;
+
+                let mut buf = vec![];
+                ::ergokv::ciborium::ser::into_writer(&new_migrations, &mut buf)
+                    .map_err(|e| ::tikv_client::Error::StringError(format!("{e}")))?;
+
+                txn.put(migrations_key.as_bytes().to_vec(), buf).await?;
 
                 txn.commit().await?;
             }

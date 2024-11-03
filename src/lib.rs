@@ -33,6 +33,7 @@
 pub use ergokv_macro::Store;
 
 pub use ciborium;
+pub use futures;
 pub use serde_json;
 
 mod local_cluster;
