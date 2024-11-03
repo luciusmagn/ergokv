@@ -39,10 +39,23 @@ use syn::{
 ///     email: String,
 /// }
 /// ```
-#[proc_macro_derive(Store, attributes(store, key, index))]
+#[proc_macro_derive(
+    Store,
+    attributes(store, key, index, migrate_from)
+)]
 pub fn derive_store(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
+
+    // TODO: Somewhere, we have Self::MODEL_NAME, elsewhere we pass around this name var
+    //       should prolly unify
+    let prev_type = input
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("migrate_from"))
+        .map(|attr| attr.parse_args::<syn::Path>())
+        .transpose()
+        .unwrap_or(None);
 
     let fields = match &input.data {
         Data::Struct(data) => match &data.fields {
@@ -51,22 +64,52 @@ pub fn derive_store(input: TokenStream) -> TokenStream {
         },
         _ => panic!("Only structs are supported"),
     };
+    let key_field = fields
+        .iter()
+        .find(|f| {
+            f.attrs.iter().any(|a| a.path().is_ident("key"))
+        })
+        .expect("A field with #[key] attribute is required");
 
-    let load_method = generate_load_method(name, fields);
-    let save_method = generate_save_method(name, fields);
-    let delete_method = generate_delete_method(name, fields);
+    let load_method = generate_load_method(fields);
+    let save_method =
+        generate_save_method(name, fields, prev_type.as_ref());
+    let delete_method =
+        generate_delete_method(name, fields, prev_type.as_ref());
     let index_methods = generate_index_methods(name, fields);
-    let set_methods = generate_set_methods(name, fields);
+    let set_methods =
+        generate_set_methods(name, fields, prev_type.as_ref());
+    let all_method = generate_all_method(key_field);
+    let migration_trait = prev_type
+        .as_ref()
+        .map(|prev| generate_migration_trait(name, prev));
+    let ensure_migrations = prev_type
+        .as_ref()
+        .map(|prev| generate_ensure_migrations(name, prev));
 
     // TODO: Ensure key uniqueness by creating a known_keys object - HashSet? Have to think about how to make it scale - should probably be an encoded trie based on bytes I guess
     // TODO: Add backup and restore functions
     // TODO: Add unique_index, which is a field_value->ID mapping (this is currently index) and index, which is a field_value->Vec<ID> mapping
     // TODO: Add search function, which queries a field by predicate -- think about if we can make this fast
+    // TODO: Migrations
+    //       - Keep track of migrations in the DB
+    //       - Generate traits for the migrations that the user is forced to implement
+    //       - attributes:
+    //         - #[migrate_from] -- on the target one - will scream if the migration isn't in the db
+    //         - #[migrate_to] -- on the previous one - will generate a trait the user needs to implement from Self to NextType
+    //         - #[model_name]/#[old_name] -- on the old version before migration to keep track of underlying model
+    //         - we store ran migrations in a key like model_name::__migrations
     quote! {
+        #migration_trait
+
         impl #name {
+            const MODEL_NAME: &'static str = stringify!(#name);
+
             #load_method
             #save_method
             #delete_method
+            #ensure_migrations
+            #all_method
             #(#index_methods)*
             #(#set_methods)*
         }
@@ -75,7 +118,6 @@ pub fn derive_store(input: TokenStream) -> TokenStream {
 }
 
 fn generate_load_method(
-    name: &Ident,
     fields: &Punctuated<Field, Comma>,
 ) -> TokenStream2 {
     let key_field = fields
@@ -91,7 +133,7 @@ fn generate_load_method(
         let field_type = &f.ty;
         quote! {
             let #field_name: #field_type = {
-                let key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), key, stringify!(#field_name));
+                let key = format!("ergokv:{}:{}:{}", Self::MODEL_NAME, key, stringify!(#field_name));
                 let value = txn.get(key.clone()).await?
                     .ok_or_else(|| tikv_client::Error::StringError(key.clone()))?;
                 ::ergokv::ciborium::de::from_reader(value.as_slice())
@@ -106,9 +148,6 @@ fn generate_load_method(
     });
 
     quote! {
-        #[doc = concat!("Load a ", stringify!(#name), " from the database.")]
-        #[doc = ""]
-        #[doc = "This method retrieves the object from TiKV using the provided key."]
         pub async fn load(key: &#key_type, txn: &mut tikv_client::Transaction) -> Result<Self, tikv_client::Error> {
             #(#field_loads)*
             Ok(Self {
@@ -121,6 +160,7 @@ fn generate_load_method(
 fn generate_save_method(
     name: &Ident,
     fields: &Punctuated<Field, Comma>,
+    prev_type: Option<&syn::Path>,
 ) -> TokenStream2 {
     let key_field = fields
         .iter()
@@ -129,11 +169,18 @@ fn generate_save_method(
         })
         .expect("A field with #[key] attribute is required");
     let key_ident = &key_field.ident;
+    let checks = generate_mutation_checks(name, prev_type);
 
     let field_saves = fields.iter().map(|f| {
         let field_name = &f.ident;
         quote! {
-            let key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), self.#key_ident, stringify!(#field_name));
+            let key = format!(
+                "ergokv:{}:{}:{}",
+                Self::MODEL_NAME,
+                ::ergokv::serde_json::to_string(&self.#key_ident)
+                    .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct key: {}", e)))?,
+                stringify!(#field_name)
+            );
             let mut value = Vec::new();
             ::ergokv::ciborium::ser::into_writer(&self.#field_name, &mut value)
                 .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode {}: {}", stringify!(#field_name), e)))?;
@@ -146,7 +193,13 @@ fn generate_save_method(
         .map(|f| {
             let field_name = &f.ident;
             quote! {
-                let index_key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), stringify!(#field_name), self.#field_name);
+                let index_key = format!(
+                    "ergokv:{}:{}:{}",
+                    Self::MODEL_NAME,
+                    stringify!(#field_name),
+                    ::ergokv::serde_json::to_string(&self.#field_name)
+                        .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct field: {}", e)))?,
+                );
                 let mut value = Vec::new();
                 ::ergokv::ciborium::ser::into_writer(&self.#key_ident, &mut value)
                     .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode {}: {}", stringify!(#field_name), e)))?;
@@ -155,10 +208,21 @@ fn generate_save_method(
         });
 
     quote! {
-        #[doc = concat!("Save this ", stringify!(#name), " to the database.")]
-        #[doc = ""]
-        #[doc = "This method stores the object in TiKV, including any indexed fields."]
         pub async fn save(&self, txn: &mut tikv_client::Transaction) -> Result<(), tikv_client::Error> {
+            #checks
+
+            // Add to master trie
+            let trie = ::ergokv::PrefixTrie::new("ergokv:__trie");
+            trie.insert(
+                txn,
+                &format!(
+                    "{}:{}",
+                    Self::MODEL_NAME,
+                    ::ergokv::serde_json::to_string(&self.#key_ident)
+                        .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct key: {}", e)))?
+                )
+            ).await?;
+
             #(#field_saves)*
             #(#index_saves)*
             Ok(())
@@ -169,6 +233,7 @@ fn generate_save_method(
 fn generate_delete_method(
     name: &Ident,
     fields: &Punctuated<Field, Comma>,
+    prev_type: Option<&syn::Path>,
 ) -> TokenStream2 {
     let key_field = fields
         .iter()
@@ -177,11 +242,18 @@ fn generate_delete_method(
         })
         .expect("A field with #[key] attribute is required");
     let key_ident = &key_field.ident;
+    let checks = generate_mutation_checks(name, prev_type);
 
     let field_deletes = fields.iter().map(|f| {
         let field_name = &f.ident;
         quote! {
-            let key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), self.#key_ident, stringify!(#field_name));
+            let key = format!(
+                "ergokv:{}:{}:{}",
+                Self::MODEL_NAME,
+                ::ergokv::serde_json::to_string(&self.#key_ident)
+                    .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct key: {}", e)))?,
+                stringify!(#field_name)
+            );
             txn.delete(key).await?;
         }
     });
@@ -191,16 +263,30 @@ fn generate_delete_method(
         .map(|f| {
             let field_name = &f.ident;
             quote! {
-                let index_key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), stringify!(#field_name), self.#field_name);
+                let index_key = format!(
+                    "ergokv:{}:{}:{}",
+                    Self::MODEL_NAME,
+                    stringify!(#field_name),
+                    ::ergokv::serde_json::to_string(&self.#field_name)
+                        .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct field: {}", e)))?,
+                );
                 txn.delete(index_key).await?;
             }
         });
 
     quote! {
-        #[doc = concat!("Delete this ", stringify!(#name), " from the database.")]
-        #[doc = ""]
-        #[doc = "This method removes the object from TiKV, including any indexed fields."]
         pub async fn delete(&self, txn: &mut tikv_client::Transaction) -> Result<(), tikv_client::Error> {
+            #checks
+
+            // Remove from master trie
+            let trie = ::ergokv::PrefixTrie::new("ergokv:__trie");
+            trie.remove(txn, &format!(
+                "{}:{}",
+                Self::MODEL_NAME,
+                ::ergokv::serde_json::to_string(&self.#key_ident)
+                    .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct key: {}", e)))?,
+            )).await?;
+
             #(#field_deletes)*
             #(#index_deletes)*
             Ok(())
@@ -224,7 +310,7 @@ fn generate_index_methods(
                 #[doc = ""]
                 #[doc = concat!("This method uses the index on the ", stringify!(#field_name), " field to efficiently retrieve the object.")]
                 pub async fn #method_name(value: &#field_type, client: &mut tikv_client::Transaction) -> Result<Option<Self>, tikv_client::Error> {
-                    let index_key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), stringify!(#field_name), value);
+                    let index_key = format!("ergokv:{}:{}:{}", Self::MODEL_NAME, stringify!(#field_name), value);
                     if let Some(key_bytes) = client.get(index_key).await? {
                         let key = ::ergokv::ciborium::de::from_reader(key_bytes.as_slice())
                             .map_err(|e| tikv_client::Error::StringError(format!("Failed to decode key: {}", e)))?;
@@ -241,6 +327,7 @@ fn generate_index_methods(
 fn generate_set_methods(
     name: &Ident,
     fields: &Punctuated<Field, Comma>,
+    prev_type: Option<&syn::Path>,
 ) -> Vec<TokenStream2> {
     fields.iter().map(|f| {
         let field_name = &f.ident;
@@ -250,15 +337,28 @@ fn generate_set_methods(
         let key_field = fields.iter().find(|f| f.attrs.iter().any(|a| a.path().is_ident("key")))
             .expect("A field with #[key] attribute is required");
         let key_ident = &key_field.ident;
+        let checks = generate_mutation_checks(name, prev_type);
 
         let index_ops = if is_indexed {
             quote! {
                 // Remove old index
-                let old_index_key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), stringify!(#field_name), self.#field_name);
+                let old_index_key = format!(
+                    "ergokv:{}:{}:{}",
+                    Self::MODEL_NAME,
+                    stringify!(#field_name),
+                    ::ergokv::serde_json::to_string(&self.#field_name)
+                        .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct field: {}", e)))?,
+                );
                 txn.delete(old_index_key).await?;
 
                 // Add new index after update
-                let new_index_key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), stringify!(#field_name), self.#field_name);
+                let new_index_key = format!(
+                    "ergokv:{}:{}:{}",
+                    Self::MODEL_NAME,
+                    stringify!(#field_name),
+                    ::ergokv::serde_json::to_string(&self.#field_name)
+                        .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct field: {}", e)))?,
+                );
                 let mut value = Vec::new();
                 ::ergokv::ciborium::ser::into_writer(&self.#key_ident, &mut value)
                     .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode key: {}", e)))?;
@@ -269,17 +369,21 @@ fn generate_set_methods(
         };
 
         quote! {
-            #[doc = concat!("Update the ", stringify!(#field_name), " field of this ", stringify!(#name), ".")]
-            #[doc = ""]
-            #[doc = concat!("This method updates the ", stringify!(#field_name), " field in the database, maintaining any necessary indexes.")]
             pub async fn #method_name(&mut self, new_value: #field_type, txn: &mut tikv_client::Transaction) -> Result<(), tikv_client::Error> {
+                #checks
                 #index_ops
 
                 // Update field
                 self.#field_name = new_value;
 
                 // Save updated field
-                let key = format!("{}:{}:{}", stringify!(#name).to_lowercase(), self.#key_ident, stringify!(#field_name));
+                let key = format!(
+                    "ergokv:{}:{}:{}",
+                    Self::MODEL_NAME,
+                    ::ergokv::serde_json::to_string(&self.#key_ident)
+                        .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct key: {}", e)))?,
+                    stringify!(#field_name)
+                );
                 let mut value = Vec::new();
                 ::ergokv::ciborium::ser::into_writer(&self.#field_name, &mut value)
                     .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode {}: {}", stringify!(#field_name), e)))?;
@@ -289,4 +393,157 @@ fn generate_set_methods(
             }
         }
     }).collect()
+}
+
+// TODO: The keys, the prefixes, therein lies the problem
+//       The keys are now json, trie stores strings
+fn generate_all_method(key_field: &Field) -> TokenStream2 {
+    let key_type = &key_field.ty;
+
+    quote! {
+        pub fn all(
+            txn: &mut ::tikv_client::Transaction
+        ) -> ::ergokv::ModelStream<
+            Self,
+            impl Fn(&'static mut tikv_client::Transaction, String)
+                    -> std::pin::Pin<Box<dyn std::future::Future<Output=Result<Self, tikv_client::Error>>>>,
+            std::pin::Pin<Box<dyn ::std::future::Future<Output=Result<Self, tikv_client::Error>>>>
+        > {
+            ::ergokv::ModelStream::new(
+                format!("{}:", Self::MODEL_NAME),
+                txn,
+                |txn, key_str| Box::pin(async move {
+                    let key: #key_type = ::ergokv::serde_json::from_str(&key_str)
+                        .map_err(|e| ::tikv_client::Error::StringError(
+                            format!("Failed to decode key: {}", e)
+                        ))?;
+
+                    dbg!(Self::load(&key, txn).await)
+                }) as std::pin::Pin<Box<dyn std::future::Future<Output=Result<Self, tikv_client::Error>>>>
+            )
+        }
+    }
+}
+
+fn generate_migration_trait(
+    name: &Ident,
+    prev_type: &syn::Path,
+) -> TokenStream2 {
+    // Convert path segments to trait name parts
+    let trait_name = format_ident!(
+        "{}To{}",
+        prev_type.segments.last().unwrap().ident,
+        name
+    );
+
+    // Method name uses lowercase
+    let method_name = format_ident!(
+        "from_{}",
+        prev_type
+            .segments
+            .last()
+            .unwrap()
+            .ident
+            .to_string()
+            .to_lowercase()
+    );
+
+    quote! {
+        pub trait #trait_name {
+            fn #method_name(prev: &#prev_type) -> Result<Self, ::tikv_client::Error>
+            where Self: Sized;
+        }
+    }
+}
+
+fn generate_ensure_migrations(
+    name: &Ident,
+    prev_type: &syn::Path,
+) -> TokenStream2 {
+    let migration_name = format!(
+        "{}->{}",
+        prev_type.segments.last().unwrap().ident,
+        name
+    );
+
+    quote! {
+        pub async fn ensure_migrations(client: &::tikv_client::TransactionClient) -> Result<(), ::tikv_client::Error> {
+            let migrations_key = format!("{}:__migrations", Self::MODEL_NAME);
+            let mut txn = client.begin_optimistic().await?;
+
+            let migrations: Vec<String> = if let Some(data) = txn.get(&migrations_key).await? {
+                ::ergokv::ciborium::de::from_reader(&data[..])?
+            } else {
+                Vec::new()
+            };
+
+            if !migrations.contains(&#migration_name.to_string()) {
+                #prev_type::ensure_migrations(Self::MODEL_NAME, client).await?;
+
+                let mut txn = client.begin_optimistic().await?;
+                let scan_prefix = format!("{}:*", Self::MODEL_NAME);
+                let prev_keys = txn.scan_keys(scan_prefix, None).await?;
+
+                for key in prev_keys {
+                    let prev: #prev_type = #prev_type::load(&key, &mut txn).await?;
+                    let new = Self::from_prevtype(&prev)?;
+                    new.save(&mut txn).await?;
+                }
+
+                let mut new_migrations = migrations;
+                new_migrations.push(#migration_name.to_string());
+                txn.put(migrations_key, ::ergokv::ciborium::ser::into_writer(&new_migrations)?).await?;
+
+                txn.commit().await?;
+            }
+
+            Ok(())
+        }
+    }
+}
+
+fn generate_mutation_checks(
+    name: &Ident,
+    prev_type: Option<&syn::Path>,
+) -> TokenStream2 {
+    #[cfg(feature = "strict-migrations")]
+    {
+        let prev_check = prev_type.map(|prev| {
+            quote! {
+                if !migrations.contains(&format!("{}->{}",
+                    stringify!(#prev),
+                    stringify!(#name)
+                )) {
+                    return Err(::tikv_client::Error::StringError(
+                        format!("Previous migration {}=>{} not applied", stringify!(#prev), stringify!(#name))
+                    ));
+                }
+            }
+        });
+
+        quote! {
+            let migrations_key = format!("{}:__migrations", Self::MODEL_NAME);
+            let migrations: Vec<String> = if let Some(data) = txn.get(&migrations_key).await? {
+                ::ergokv::ciborium::de::from_reader(&data[..])?
+            } else {
+                Vec::new()
+            };
+
+            if migrations.iter().any(|m| m.starts_with(&format!("{}->", stringify!(#name)))) {
+                return Err(::tikv_client::Error::StringError(
+                    format!("Cannot modify {} - newer version exists", stringify!(#name))
+                ));
+            }
+
+            #prev_check
+        }
+    }
+
+    #[cfg(not(feature = "strict-migrations"))]
+    {
+        // so we can prevent a warning about the params being unused with strict migrations
+        let _unused_prev = prev_type;
+        let _unused_name = name;
+        quote! {}
+    }
 }

@@ -1,67 +1,12 @@
-use std::process::{Child, Command};
-use std::thread::sleep;
-use std::time::Duration;
-
-struct TiKVTestInstance {
-    pd_process: Child,
-    tikv_process: Child,
-}
-
-impl TiKVTestInstance {
-    fn new() -> Self {
-        // Start PD (Placement Driver)
-        let pd_process = Command::new("pd-server")
-            .args(&[
-                "--data-dir",
-                "/tmp/pd",
-                "--client-urls",
-                "http://127.0.0.1:2379",
-            ])
-            .spawn()
-            .expect("Failed to start PD");
-
-        // Give PD a moment to start
-        sleep(Duration::from_secs(2));
-
-        // Start TiKV
-        let tikv_process = Command::new("tikv-server")
-            .args(&[
-                "--pd",
-                "127.0.0.1:2379",
-                "--data-dir",
-                "/tmp/tikv",
-            ])
-            .spawn()
-            .expect("Failed to start TiKV");
-
-        // Give TiKV a moment to start
-        sleep(Duration::from_secs(5));
-
-        TiKVTestInstance {
-            pd_process,
-            tikv_process,
-        }
-    }
-}
-
-impl Drop for TiKVTestInstance {
-    fn drop(&mut self) {
-        // Stop TiKV and PD
-        self.tikv_process
-            .kill()
-            .expect("Failed to kill TiKV process");
-        self.pd_process
-            .kill()
-            .expect("Failed to kill PD process");
-    }
-}
-
-// The good part of the test starts here:
-use ergokv::Store;
+use ergokv::{LocalCluster, Store};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use tempfile::TempDir;
 use uuid::Uuid;
 
-#[derive(Store, Serialize, Deserialize, Debug, PartialEq)]
+#[derive(
+    Store, Serialize, Deserialize, Debug, PartialEq, Clone,
+)]
 struct User {
     #[key]
     id: Uuid,
@@ -72,15 +17,12 @@ struct User {
 
 #[tokio::test]
 async fn test_user_store() {
+    let tmp = TempDir::new().expect("Failed to create temp dir");
     // Start TiKV instance
-    let _tikv_instance = TiKVTestInstance::new();
+    let tikv_instance = LocalCluster::start(tmp.path()).unwrap();
 
     // Set up TiKV client
-    let client = tikv_client::TransactionClient::new(vec![
-        "127.0.0.1:2379",
-    ])
-    .await
-    .unwrap();
+    let client = tikv_instance.spawn_client().await.unwrap();
 
     // Create a new user
     let user = User {
@@ -131,5 +73,56 @@ async fn test_user_store() {
     let mut txn = client.begin_optimistic().await.unwrap();
     assert!(User::load(&user.id, &mut txn).await.is_err());
 
+    txn.commit().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_user_all() {
+    let tmp = TempDir::new().expect("Failed to create temp dir");
+    let tikv_instance = LocalCluster::start(tmp.path()).unwrap();
+    let client = tikv_instance.spawn_client().await.unwrap();
+    let mut txn = client.begin_optimistic().await.unwrap();
+
+    // Create test users
+    let users = vec![
+        User {
+            id: Uuid::new_v4(),
+            username: "alice".to_string(),
+            email: "alice@example.com".to_string(),
+        },
+        User {
+            id: Uuid::new_v4(),
+            username: "bob".to_string(),
+            email: "bob@example.com".to_string(),
+        },
+        User {
+            id: Uuid::new_v4(),
+            username: "charlie".to_string(),
+            email: "charlie@example.com".to_string(),
+        },
+    ];
+
+    // Save all users
+    for user in &users {
+        user.save(&mut txn).await.unwrap();
+    }
+    txn.commit().await.unwrap();
+
+    // Test all() method
+    let mut txn = client.begin_optimistic().await.unwrap();
+    let mut found_users = Vec::new();
+
+    let stream = User::all(&mut txn);
+    futures::pin_mut!(stream);
+    while let Some(Ok(user)) = stream.next().await {
+        found_users.push(user);
+    }
+
+    // Sort both vectors by username for comparison
+    let mut users = users.clone();
+    users.sort_by(|a, b| a.username.cmp(&b.username));
+    found_users.sort_by(|a, b| a.username.cmp(&b.username));
+
+    assert_eq!(users, found_users);
     txn.commit().await.unwrap();
 }

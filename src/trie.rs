@@ -34,6 +34,7 @@ struct TrieNode {
 ///
 /// Try to not be comedic and nameclash with structures with a Store derive,
 /// as unexpected things might happen.
+#[derive(Clone, Debug)]
 pub struct PrefixTrie {
     prefix: String,
 }
@@ -110,6 +111,8 @@ impl PrefixTrie {
         txn: &mut Transaction,
         key: &str,
     ) -> Result<(), TikvError> {
+        println!("inserting {}", key);
+
         if key.is_empty() {
             Err(TikvError::StringError(
                 "Empty string keys are not allowed".into(),
@@ -162,6 +165,8 @@ impl PrefixTrie {
         txn: &mut Transaction,
         key: &str,
     ) -> Result<Option<String>, TikvError> {
+        println!("retrieving {}", key);
+
         let mut current_path = String::new();
 
         for (i, c) in key.chars().enumerate() {
@@ -191,30 +196,30 @@ impl PrefixTrie {
     /// Finds all keys in the trie that start with the given prefix.
     ///
     /// Returns a vector of matching keys in no particular order.
-    pub async fn find_by_prefix(
-        &self,
-        txn: &mut Transaction,
-        prefix: &str,
-    ) -> Result<Vec<String>, TikvError> {
-        let mut results = Vec::new();
-        let mut queue = vec![prefix.to_string()];
+    pub fn find_by_prefix<'a, 'b>(
+        &'a self,
+        txn: &'a mut Transaction,
+        prefix: &'b str,
+    ) -> impl Stream<Item = Result<String, TikvError>> + 'a {
+        let prefix = prefix.to_string();
 
-        while let Some(path) = queue.pop() {
-            if let Some(node) = self.get_node(txn, &path).await?
-            {
-                if let Some(key) = node.key {
-                    results.push(key);
-                }
+        try_stream! {
+            let mut queue = vec![prefix.to_string()];
 
-                for c in node.children {
-                    let mut child_path = path.clone();
-                    child_path.push(c);
-                    queue.push(child_path);
+            while let Some(path) = queue.pop() {
+                if let Some(node) = self.get_node(txn, &path).await? {
+                    if let Some(key) = node.key {
+                        yield key;
+                    }
+
+                    for c in node.children {
+                        let mut child_path = path.clone();
+                        child_path.push(c);
+                        queue.push(child_path);
+                    }
                 }
             }
         }
-
-        Ok(results)
     }
 
     /// Returns a stream of all keys stored in the trie.
@@ -350,9 +355,17 @@ mod tests {
         );
         assert_eq!(trie.get(&mut txn, "hel").await?, None);
 
-        let mut results =
-            trie.find_by_prefix(&mut txn, "hel").await?;
-        results.sort();
+        // Collect prefix stream results
+        let mut results = Vec::new();
+        let stream = trie.find_by_prefix(&mut txn, "hel");
+        {
+            futures::pin_mut!(stream);
+            while let Ok(Some(key)) = stream.try_next().await {
+                results.push(key);
+            }
+            results.sort();
+        }
+
         assert_eq!(
             results,
             vec![
@@ -366,9 +379,17 @@ mod tests {
         trie.remove(&mut txn, "help").await?;
         assert_eq!(trie.get(&mut txn, "help").await?, None);
 
-        let mut results =
-            trie.find_by_prefix(&mut txn, "hel").await?;
-        results.sort();
+        // Check prefix after removal
+        let mut results = Vec::new();
+        let stream = trie.find_by_prefix(&mut txn, "hel");
+        {
+            futures::pin_mut!(stream);
+            while let Ok(Some(key)) = stream.try_next().await {
+                results.push(key);
+            }
+            results.sort();
+        }
+
         assert_eq!(
             results,
             vec![
@@ -398,9 +419,16 @@ mod tests {
             Some("x".to_string())
         );
 
-        let mut results =
-            trie.find_by_prefix(&mut txn, "x").await?;
-        results.sort();
+        // Check prefix for single char
+        let mut results = Vec::new();
+        let stream = trie.find_by_prefix(&mut txn, "x");
+        {
+            futures::pin_mut!(stream);
+            while let Ok(Some(key)) = stream.try_next().await {
+                results.push(key);
+            }
+            results.sort();
+        }
         assert_eq!(results, vec!["x".to_string()]);
 
         txn.commit().await?;

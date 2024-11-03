@@ -7,6 +7,9 @@ license = "Fair"
 repository = "https://github.com/luciusmagn/ergokv"
 documentation = "https://docs.rs/ergokv"
 
+[features]
+strict-migrations = []
+
 [lib]
 proc-macro = true
 
