@@ -7,9 +7,6 @@ license = "Fair"
 repository = "https://github.com/luciusmagn/ergokv"
 documentation = "https://docs.rs/ergokv"
 
-[features]
-strict-migrations = ["ergokv-macro/strict-migrations"]
-
 [dependencies]
 ergokv-macro = { version = "0.1.3", path = "ergokv-macro" }
 tikv-client = "0.3"
