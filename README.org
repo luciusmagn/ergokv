@@ -114,6 +114,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 #+END_SRC
+** Backup and Restore
+
+The =Store= derive automatically implements backup and restore functionality for your models:
+
+#+BEGIN_SRC rust
+use ergokv::Store;
+use serde::{Serialize, Deserialize};
+use uuid::Uuid;
+
+#[derive(Store, Serialize, Deserialize)]
+struct User {
+    #[key]
+    id: Uuid,
+    #[index]
+    username: String,
+    email: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = tikv_client::TransactionClient::new(vec!["127.0.0.1:2379"]).await?;
+
+    // Backup all users
+    let mut txn = client.begin_optimistic().await?;
+    let backup_path = User::backup(&mut txn, "backups/").await?;
+    println!("Backup created at: {}", backup_path.display());
+    txn.commit().await?;
+
+    // Restore from backup
+    let mut txn = client.begin_optimistic().await?;
+    User::restore(&mut txn, backup_path).await?;
+    txn.commit().await?;
+
+    Ok(())
+}
+#+END_SRC
+
+Backups are stored as line-delimited JSON files, with automatic timestamping:
+=User_1708644444.json=. Each line contains one serialized instance, making the
+backups human-readable and easy to process with standard tools.
 
 ** Migrations
 

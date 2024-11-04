@@ -47,8 +47,6 @@ pub fn derive_store(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
 
-    // TODO: Somewhere, we have Self::MODEL_NAME, elsewhere we pass around this name var
-    //       should prolly unify
     let prev_type = input
         .attrs
         .iter()
@@ -93,19 +91,10 @@ pub fn derive_store(input: TokenStream) -> TokenStream {
             },
             |prev| generate_ensure_migrations(name, prev)
         );
+    let backup_restore = generate_backup_restore_methods();
 
-    // TODO: Ensure key uniqueness by creating a known_keys object - HashSet? Have to think about how to make it scale - should probably be an encoded trie based on bytes I guess
-    // TODO: Add backup and restore functions
     // TODO: Add unique_index, which is a field_value->ID mapping (this is currently index) and index, which is a field_value->Vec<ID> mapping
     // TODO: Add search function, which queries a field by predicate -- think about if we can make this fast
-    // TODO: Migrations
-    //       - Keep track of migrations in the DB
-    //       - Generate traits for the migrations that the user is forced to implement
-    //       - attributes:
-    //         - #[migrate_from] -- on the target one - will scream if the migration isn't in the db
-    //         - #[migrate_to] -- on the previous one - will generate a trait the user needs to implement from Self to NextType
-    //         - #[model_name]/#[old_name] -- on the old version before migration to keep track of underlying model
-    //         - we store ran migrations in a key like model_name::__migrations
     quote! {
         #migration_trait
 
@@ -117,6 +106,7 @@ pub fn derive_store(input: TokenStream) -> TokenStream {
             #delete_method
             #ensure_migrations
             #all_method
+            #backup_restore
             #(#index_methods)*
             #(#set_methods)*
         }
@@ -323,10 +313,17 @@ fn generate_index_methods(
                 #[doc = ""]
                 #[doc = concat!("This method uses the index on the ", stringify!(#field_name), " field to efficiently retrieve the object.")]
                 pub async fn #method_name(value: &#field_type, client: &mut tikv_client::Transaction) -> Result<Option<Self>, tikv_client::Error> {
-                    let index_key = format!("ergokv:{}:{}:{}", Self::MODEL_NAME, stringify!(#field_name), value);
+                    let index_key = format!(
+                        "ergokv:{}:{}:{}",
+                        Self::MODEL_NAME,
+                        stringify!(#field_name),
+                        ::ergokv::serde_json::to_string(&value)
+                            .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct value: {e}")))?
+                    );
                     if let Some(key_bytes) = client.get(index_key).await? {
                         let key = ::ergokv::ciborium::de::from_reader(key_bytes.as_slice())
                             .map_err(|e| tikv_client::Error::StringError(format!("Failed to decode key: {}", e)))?;
+
                         Self::load(&key, client).await.map(Some)
                     } else {
                         Ok(None)
@@ -581,5 +578,134 @@ fn generate_mutation_checks(
         let _unused_prev = prev_type;
         let _unused_name = name;
         quote! {}
+    }
+}
+
+// TODO: Consider using RON instead, or providing it as an option
+fn generate_backup_restore_methods() -> TokenStream2 {
+    quote! {
+         /// Creates a backup of all instances of this type in JSON format.
+         ///
+         /// The backup is stored in a file named `{MODEL_NAME}_{timestamp}.json` under the specified path,
+         /// where timestamp is the Unix epoch time in seconds. Each line in the file contains one JSON-serialized
+         /// instance.
+         ///
+         /// # Arguments
+         ///
+         /// * `txn` - TiKV transaction to use for reading the data
+         /// * `path` - Directory where the backup file will be created
+         ///
+         /// # Returns
+         ///
+         /// Returns the full path to the created backup file.
+         ///
+         /// # Errors
+         ///
+         /// This function will return an error if:
+         /// - The backup directory is not writable
+         /// - Any instance fails to serialize to JSON
+         /// - The TiKV transaction fails
+         ///
+         /// # Example
+         ///
+         /// ```no_run
+         /// # use ergokv::Store;
+         /// # use tikv_client::TransactionClient;
+         /// # #[derive(Store)]
+         /// # struct User { }
+         /// # async fn example() -> Result<(), tikv_client::Error> {
+         /// # let client = TransactionClient::new(vec!["127.0.0.1:2379"]).await?;
+         /// let mut txn = client.begin_optimistic().await?;
+         /// let backup_path = User::backup(&mut txn, "backups/").await?;
+         /// println!("Backup created at: {}", backup_path.display());
+         /// txn.commit().await?;
+         /// # Ok(())
+         /// # }
+         /// ```
+         pub async fn backup(txn: &mut tikv_client::Transaction, path: impl AsRef<std::path::Path>) -> Result<std::path::PathBuf, tikv_client::Error> {
+            use std::io::Write;
+            use futures::StreamExt;
+
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| tikv_client::Error::StringError(e.to_string()))?
+                .as_secs();
+
+            let filename = format!("{}_{}.json", Self::MODEL_NAME, timestamp);
+            let backup_path = path.as_ref().join(filename);
+
+            let mut file = std::fs::File::create(&backup_path)
+                .map_err(|e| tikv_client::Error::StringError(format!("Failed to create backup file: {}", e)))?;
+
+            let mut stream = Box::pin(Self::all(txn));
+            while let Some(item) = stream.next().await {
+                let item = item?;
+                let json = serde_json::to_string(&item)
+                    .map_err(|e| tikv_client::Error::StringError(format!("Failed to serialize: {}", e)))?;
+                writeln!(file, "{}", json)
+                    .map_err(|e| tikv_client::Error::StringError(format!("Failed to write: {}", e)))?;
+            }
+
+            Ok(backup_path)
+        }
+
+        /// Restores instances from a backup file created by [`backup`](Self::backup).
+        ///
+        /// Reads the backup file line by line, deserializing each line as an instance
+        /// and saving it to TiKV. The operation is performed within the provided transaction,
+        /// allowing you to control atomicity.
+        ///
+        /// # Arguments
+        ///
+        /// * `txn` - TiKV transaction to use for writing the data
+        /// * `path` - Path to the backup file
+        ///
+        /// # Errors
+        ///
+        /// This function will return an error if:
+        /// - The backup file cannot be read
+        /// - Any line fails to deserialize from JSON
+        /// - The TiKV transaction fails
+        /// - Any instance fails to save
+        ///
+        /// # Warning
+        ///
+        /// This operation will overwrite any existing instances with the same keys.
+        /// Make sure to handle any potential conflicts before restoring.
+        ///
+        /// # Example
+        ///
+        /// ```no_run
+        /// # use ergokv::Store;
+        /// # use tikv_client::TransactionClient;
+        /// # #[derive(Store)]
+        /// # struct User { }
+        /// # async fn example() -> Result<(), tikv_client::Error> {
+        /// # let client = TransactionClient::new(vec!["127.0.0.1:2379"]).await?;
+        /// let mut txn = client.begin_optimistic().await?;
+        /// User::restore(&mut txn, "backups/User_1234567890.json").await?;
+        /// txn.commit().await?;
+        /// # Ok(())
+        /// # }
+        /// ```
+        pub async fn restore(txn: &mut tikv_client::Transaction, path: impl AsRef<std::path::Path>) -> Result<(), tikv_client::Error> {
+            use std::io::BufRead;
+
+            let file = std::fs::File::open(path)
+                .map_err(|e| tikv_client::Error::StringError(format!("Failed to open backup file: {}", e)))?;
+
+            let reader = std::io::BufReader::new(file);
+            for line in reader.lines() {
+                let line = line
+                    .map_err(|e| tikv_client::Error::StringError(format!("Failed to read line: {}", e)))?;
+
+                let item: Self = serde_json::from_str(&line)
+                    .map_err(|e| tikv_client::Error::StringError(format!("Failed to deserialize: {}", e)))?;
+
+                item.save(txn).await?;
+            }
+
+            Ok(())
+        }
     }
 }
