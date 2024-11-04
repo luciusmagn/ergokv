@@ -115,6 +115,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 #+END_SRC
 
+** Migrations
+
+Store migrations are supported via the `#[migrate_from]` attribute. This allows you to evolve your data structures while keeping data integrity.
+
+*** Example
+
+The recommended approach is to use private submodules for versioning models and always re-export the latest version:
+
+#+BEGIN_SRC rust
+mod models {
+    mod v1 {
+        #[derive(Store, Serialize, Deserialize)]
+        #[model_name = "User"]  // Required when struct was renamed
+        pub(super) struct UserV1 {
+            #[key]
+            id: Uuid,
+            name: String,
+            email: String,
+        }
+    }
+
+    mod v2 {
+        #[derive(Store, Serialize, Deserialize)]
+        #[migrate_from(super::v1::UserV1)]
+        pub(super) struct User {
+            #[key]
+            id: Uuid,
+            first_name: String,
+            last_name: String,
+            email: String,
+        }
+
+        impl UserV1ToUser for User {
+            fn from_user_v1(prev: &super::v1::UserV1) -> Result<Self, tikv_client::Error> {
+                let (first, last) = prev.name
+                    .split_once(' ')
+                    .ok_or_else(|| tikv_client::Error::StringError(
+                        "Invalid name format".into()
+                    ))?;
+
+                Ok(Self {
+                    id: prev.id,
+                    first_name: first.to_string(),
+                    last_name: last.to_string(),
+                    email: prev.email.clone(),
+                })
+            }
+        }
+    }
+
+    // Always re-export latest version
+    pub use v2::User;
+}
+#+END_SRC
+
+Note: The `#[model_name]` attribute is required when the struct name changes between versions (like UserV1 -> User above). This ensures ergokv can track the underlying model correctly across migrations.
+
+Run migrations:
+
+#+BEGIN_SRC rust
+User::ensure_migrations(&client).await?;
+#+END_SRC
+
+
 ** Running TiKV
 
 *** For Development
