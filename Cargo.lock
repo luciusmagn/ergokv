@@ -361,7 +361,7 @@ checksum = "5443807d6dff69373d433ab9ef5378ad8df50ca6298caf15de6e52e24aaf54d5"
 
 [[package]]
 name = "ergokv"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "async-stream",
  "ciborium",
@@ -379,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "ergokv-macro"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "proc-macro2",
  "quote",
