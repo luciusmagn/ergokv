@@ -379,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "ergokv-macro"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "proc-macro2",
  "quote",

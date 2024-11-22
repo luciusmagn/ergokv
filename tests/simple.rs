@@ -10,9 +10,12 @@ use uuid::Uuid;
 struct User {
     #[key]
     id: Uuid,
-    #[index]
+    #[unique_index]
     username: String,
+    #[index]
     email: String,
+    #[index]
+    department: String,
 }
 
 #[tokio::test]
@@ -29,6 +32,7 @@ async fn test_user_store() {
         id: Uuid::new_v4(),
         username: "testuser".to_string(),
         email: "test@example.com".to_string(),
+        department: "Engineering".to_string(),
     };
 
     // Start a transaction
@@ -50,12 +54,25 @@ async fn test_user_store() {
     // Assert that the loaded user matches the original
     assert_eq!(user, loaded_user);
 
-    // Test index method
+    // Test unique index method
     let found_user = User::by_username(&user.username, &mut txn)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(user, found_user);
+
+    // Test non-unique index method
+    let users_by_email =
+        User::by_email(&user.email, &mut txn).await.unwrap();
+    assert_eq!(users_by_email.len(), 1);
+    assert_eq!(users_by_email[0], user);
+
+    let users_by_department =
+        User::by_department(&user.department, &mut txn)
+            .await
+            .unwrap();
+    assert_eq!(users_by_department.len(), 1);
+    assert_eq!(users_by_department[0], user);
 
     // Update user
     loaded_user
@@ -89,16 +106,19 @@ async fn test_user_all() {
             id: Uuid::new_v4(),
             username: "alice".to_string(),
             email: "alice@example.com".to_string(),
+            department: "Engineering".to_string(),
         },
         User {
             id: Uuid::new_v4(),
             username: "bob".to_string(),
             email: "bob@example.com".to_string(),
+            department: "Engineering".to_string(),
         },
         User {
             id: Uuid::new_v4(),
             username: "charlie".to_string(),
             email: "charlie@example.com".to_string(),
+            department: "Marketing".to_string(),
         },
     ];
 
@@ -108,8 +128,24 @@ async fn test_user_all() {
     }
     txn.commit().await.unwrap();
 
-    // Test all() method
+    // Test index methods
     let mut txn = client.begin_optimistic().await.unwrap();
+
+    // Unique index method
+    let bob = User::by_username("bob", &mut txn)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(bob, users[1]);
+
+    // Non-unique index method
+    let engineering_users =
+        User::by_department("Engineering", &mut txn)
+            .await
+            .unwrap();
+    assert_eq!(engineering_users.len(), 2);
+
+    // Test all() method
     let mut found_users = Vec::new();
 
     {

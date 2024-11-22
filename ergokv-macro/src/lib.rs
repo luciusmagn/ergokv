@@ -41,7 +41,14 @@ use syn::{
 /// ```
 #[proc_macro_derive(
     Store,
-    attributes(store, key, index, migrate_from, model_name)
+    attributes(
+        store,
+        key,
+        index,
+        unique_index,
+        migrate_from,
+        model_name
+    )
 )]
 pub fn derive_store(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -192,21 +199,54 @@ fn generate_save_method(
     });
 
     let index_saves = fields.iter()
-        .filter(|f| f.attrs.iter().any(|a| a.path().is_ident("index")))
+        .filter(|f| f.attrs.iter().any(|a| a.path().is_ident("unique_index") || a.path().is_ident("index")))
         .map(|f| {
             let field_name = &f.ident;
-            quote! {
-                let index_key = format!(
-                    "ergokv:{}:{}:{}",
-                    Self::MODEL_NAME,
-                    stringify!(#field_name),
-                    ::ergokv::serde_json::to_string(&self.#field_name)
-                        .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct field: {}", e)))?,
-                );
-                let mut value = Vec::new();
-                ::ergokv::ciborium::ser::into_writer(&self.#key_ident, &mut value)
-                    .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode {}: {}", stringify!(#field_name), e)))?;
-                txn.put(index_key, value).await?;
+            let is_unique = f.attrs.iter().any(|a| a.path().is_ident("unique_index"));
+
+            if is_unique {
+                quote! {
+                    let index_key = format!(
+                        "ergokv:{}:unique_index:{}:{}",
+                        Self::MODEL_NAME,
+                        stringify!(#field_name),
+                        ::ergokv::serde_json::to_string(&self.#field_name)
+                            .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct field: {}", e)))?,
+                    );
+                    let mut value = Vec::new();
+                    ::ergokv::ciborium::ser::into_writer(&self.#key_ident, &mut value)
+                        .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode {}: {}", stringify!(#field_name), e)))?;
+                    txn.put(index_key, value).await?;
+                }
+            } else {
+                quote! {
+                    let index_key = format!(
+                        "ergokv:{}:index:{}:{}",
+                        Self::MODEL_NAME,
+                        stringify!(#field_name),
+                        ::ergokv::serde_json::to_string(&self.#field_name)
+                            .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct field: {}", e)))?,
+                    );
+
+                    // Read existing keys
+                    let mut keys = if let Some(existing_keys_bytes) = txn.get(index_key.clone()).await? {
+                        ::ergokv::ciborium::de::from_reader(existing_keys_bytes.as_slice())
+                            .map_err(|e| tikv_client::Error::StringError(format!("Failed to decode keys: {}", e)))?
+                    } else {
+                        Vec::new()
+                    };
+
+                    // Add current key if not already present
+                    if !keys.contains(&self.#key_ident) {
+                        keys.push(self.#key_ident);
+                    }
+
+                    // Write updated keys
+                    let mut value = Vec::new();
+                    ::ergokv::ciborium::ser::into_writer(&keys, &mut value)
+                        .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode keys: {}", e)))?;
+                    txn.put(index_key, value).await?;
+                }
             }
         });
 
@@ -245,6 +285,7 @@ fn generate_delete_method(
         })
         .expect("A field with #[key] attribute is required");
     let key_ident = &key_field.ident;
+    let key_type = &key_field.ty;
     let checks = generate_mutation_checks(name, prev_type);
 
     let field_deletes = fields.iter().map(|f| {
@@ -262,18 +303,52 @@ fn generate_delete_method(
     });
 
     let index_deletes = fields.iter()
-        .filter(|f| f.attrs.iter().any(|a| a.path().is_ident("index")))
+        .filter(|f| f.attrs.iter().any(|a| a.path().is_ident("unique_index") || a.path().is_ident("index")))
         .map(|f| {
             let field_name = &f.ident;
-            quote! {
-                let index_key = format!(
-                    "ergokv:{}:{}:{}",
-                    Self::MODEL_NAME,
-                    stringify!(#field_name),
-                    ::ergokv::serde_json::to_string(&self.#field_name)
-                        .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct field: {}", e)))?,
-                );
-                txn.delete(index_key).await?;
+            let is_unique = f.attrs.iter().any(|a| a.path().is_ident("unique_index"));
+
+            if is_unique {
+                quote! {
+                    let index_key = format!(
+                        "ergokv:{}:unique_index:{}:{}",
+                        Self::MODEL_NAME,
+                        stringify!(#field_name),
+                        ::ergokv::serde_json::to_string(&self.#field_name)
+                            .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct field: {}", e)))?,
+                    );
+                    txn.delete(index_key).await?;
+                }
+            } else {
+                quote! {
+                    let index_key = format!(
+                        "ergokv:{}:index:{}:{}",
+                        Self::MODEL_NAME,
+                        stringify!(#field_name),
+                        ::ergokv::serde_json::to_string(&self.#field_name)
+                            .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct field: {}", e)))?,
+                    );
+
+                    // Read existing keys
+                    if let Some(existing_keys_bytes) = txn.get(index_key.clone()).await? {
+                        let mut keys: Vec<#key_type> = ::ergokv::ciborium::de::from_reader(existing_keys_bytes.as_slice())
+                            .map_err(|e| tikv_client::Error::StringError(format!("Failed to decode keys: {}", e)))?;
+
+                        // Remove current key
+                        keys.retain(|k| k != &self.#key_ident);
+
+                        // If keys is empty, delete the index entry
+                        if keys.is_empty() {
+                            txn.delete(index_key).await?;
+                        } else {
+                            // Otherwise, update the keys
+                            let mut value = Vec::new();
+                            ::ergokv::ciborium::ser::into_writer(&keys, &mut value)
+                                .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode keys: {}", e)))?;
+                            txn.put(index_key, value).await?;
+                        }
+                    }
+                }
             }
         });
 
@@ -301,32 +376,70 @@ fn generate_index_methods(
     name: &Ident,
     fields: &Punctuated<Field, Comma>,
 ) -> Vec<TokenStream2> {
+    let key_field = fields
+        .iter()
+        .find(|f| {
+            f.attrs.iter().any(|a| a.path().is_ident("key"))
+        })
+        .expect("A field with #[key] attribute is required");
+    let key_type = &key_field.ty;
+
     fields.iter()
-        .filter(|f| f.attrs.iter().any(|a| a.path().is_ident("index")))
+        .filter(|f| f.attrs.iter().any(|a| a.path().is_ident("unique_index") || a.path().is_ident("index")))
         .map(|f| {
             let field_name = &f.ident;
             let field_type = &f.ty;
             let method_name = format_ident!("by_{}", field_name.clone().expect("Missing field name"));
+            let is_unique = f.attrs.iter().any(|a| a.path().is_ident("unique_index"));
 
-            quote! {
-                #[doc = concat!("Find a ", stringify!(#name), " by its ", stringify!(#field_name), " field.")]
-                #[doc = ""]
-                #[doc = concat!("This method uses the index on the ", stringify!(#field_name), " field to efficiently retrieve the object.")]
-                pub async fn #method_name(value: &#field_type, client: &mut tikv_client::Transaction) -> Result<Option<Self>, tikv_client::Error> {
-                    let index_key = format!(
-                        "ergokv:{}:{}:{}",
-                        Self::MODEL_NAME,
-                        stringify!(#field_name),
-                        ::ergokv::serde_json::to_string(&value)
-                            .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct value: {e}")))?
-                    );
-                    if let Some(key_bytes) = client.get(index_key).await? {
-                        let key = ::ergokv::ciborium::de::from_reader(key_bytes.as_slice())
-                            .map_err(|e| tikv_client::Error::StringError(format!("Failed to decode key: {}", e)))?;
+            if is_unique {
+                quote! {
+                    #[doc = concat!("Find a ", stringify!(#name), " by its ", stringify!(#field_name), " field.")]
+                    #[doc = ""]
+                    #[doc = concat!("This method uses the unique index on the ", stringify!(#field_name), " field to efficiently retrieve the object.")]
+                    pub async fn #method_name<T: Into<#field_type>>(value: T, client: &mut tikv_client::Transaction) -> Result<Option<Self>, tikv_client::Error> {
+                        let index_key = format!(
+                            "ergokv:{}:unique_index:{}:{}",
+                            Self::MODEL_NAME,
+                            stringify!(#field_name),
+                            ::ergokv::serde_json::to_string(&value.into())
+                                .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct value: {e}")))?
+                        );
+                        if let Some(key_bytes) = client.get(index_key).await? {
+                            let key = ::ergokv::ciborium::de::from_reader(key_bytes.as_slice())
+                                .map_err(|e| tikv_client::Error::StringError(format!("Failed to decode key: {}", e)))?;
 
-                        Self::load(&key, client).await.map(Some)
-                    } else {
-                        Ok(None)
+                            Self::load(&key, client).await.map(Some)
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                }
+            } else {
+                quote! {
+                    #[doc = concat!("Find all ", stringify!(#name), " by its ", stringify!(#field_name), " field.")]
+                    #[doc = ""]
+                    #[doc = concat!("This method uses the index on the ", stringify!(#field_name), " field to efficiently retrieve multiple objects.")]
+                    pub async fn #method_name<T: Into<#field_type>>(value: T, client: &mut tikv_client::Transaction) -> Result<Vec<Self>, tikv_client::Error> {
+                        let index_key = format!(
+                            "ergokv:{}:index:{}:{}",
+                            Self::MODEL_NAME,
+                            stringify!(#field_name),
+                            ::ergokv::serde_json::to_string(&value.into())
+                                .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct value: {e}")))?
+                        );
+                        if let Some(keys_bytes) = client.get(index_key).await? {
+                            let keys: Vec<#key_type> = ::ergokv::ciborium::de::from_reader(keys_bytes.as_slice())
+                                .map_err(|e| tikv_client::Error::StringError(format!("Failed to decode keys: {}", e)))?;
+
+                            let mut results = Vec::new();
+                            for key in keys {
+                                results.push(Self::load(&key, client).await?);
+                            }
+                            Ok(results)
+                        } else {
+                            Ok(Vec::new())
+                        }
                     }
                 }
             }

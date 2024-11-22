@@ -1,80 +1,90 @@
-* ergokv
+# ergokv
 
-=DISCLAIMER:= THIS IS ALPHA AS FUCK. (not yet suitable for production)
+`DISCLAIMER:` THIS IS ALPHA AS FUCK. (not yet suitable for production)
 
-A Rust library for easy integration with TiKV, providing derive macros for automatic CRUD operations.
+A Rust library for easy integration with TiKV, providing derive macros
+for automatic CRUD operations.
 
-[[https://crates.io/crates/ergokv][https://img.shields.io/crates/v/ergokv.svg]]
-[[https://docs.rs/ergokv][https://docs.rs/ergokv/badge.svg]]
-[[https://github.com/luciumagn/ergokv/blob/main/LICENSE][https://img.shields.io/badge/license-Fair-blue.svg]]
+[![](https://img.shields.io/crates/v/ergokv.svg)](https://crates.io/crates/ergokv)
+[![](https://docs.rs/ergokv/badge.svg)](https://docs.rs/ergokv)
+[![](https://img.shields.io/badge/license-Fair-blue.svg)](https://github.com/luciumagn/ergokv/blob/main/LICENSE)
 
-** Installation
+## Installation
 
-Add this to your =Cargo.toml=:
+Add this to your `Cargo.toml`:
 
-#+BEGIN_SRC toml
+``` toml
 [dependencies]
 ergokv = "0.1.8"
-#+END_SRC
+```
 
-** Documentation
+## Documentation
 
-For detailed documentation, including usage examples and API reference, please visit:
+For detailed documentation, including usage examples and API reference,
+please visit:
 
-[[https://docs.rs/ergokv][https://docs.rs/ergokv]]
+[<https://docs.rs/ergokv>](https://docs.rs/ergokv)
 
 You can also generate the documentation locally by running:
 
-#+BEGIN_SRC bash
+``` bash
 cargo doc --open
-#+END_SRC
+```
 
-** Prerequisites
+## Prerequisites
 
 - Rust (edition 2021 or later)
 - Protobuf
 - GRPC
 - TiKV (can be installed via TiUP or automatically via LocalCluster)
 
-*** Installing TiKV
+### Installing TiKV
 
 There are two primary ways to install TiKV:
 
-1. Manual Installation with TiUP:
-   #+BEGIN_SRC bash
-   # Install TiUP (TiKV's package manager)
-   curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
+1.  Manual Installation with TiUP:
 
-   # Set up TiKV cluster for development
-   tiup playground
-   #+END_SRC
+    ``` bash
+    # Install TiUP (TiKV's package manager)
+    curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh
 
-2. Automatic Installation with LocalCluster:
-   #+BEGIN_SRC rust
-   use ergokv::LocalCluster;
+    # Set up TiKV cluster for development
+    tiup playground
+    ```
 
-   // LocalCluster automatically downloads and sets up TiKV if not present
-   let cluster = LocalCluster::start(temp_dir).unwrap();
-   let client = cluster.spawn_client().await.unwrap();
-   #+END_SRC
+2.  Automatic Installation with LocalCluster:
 
-   LocalCluster is particularly useful for development and testing, as it automatically handles TiKV installation and cluster setup.
+    ``` rust
+    use ergokv::LocalCluster;
 
-** Attributes
+    // LocalCluster automatically downloads and sets up TiKV if not present
+    let cluster = LocalCluster::start(temp_dir).unwrap();
+    let client = cluster.spawn_client().await.unwrap();
+    ```
 
-The =Store= derive supports several attributes to customize your data model:
+    LocalCluster is particularly useful for development and testing, as
+    it automatically handles TiKV installation and cluster setup.
 
-- =@[key]=: Marks the primary key field (exactly one field must have this attribute)
-  #+BEGIN_SRC rust
+## Attributes
+
+The `Store` derive supports several attributes to customize your data
+model:
+
+- `@[key]`: Marks the primary key field (exactly one field must have
+  this attribute)
+
+  ``` rust
   #[derive(Store)]
   struct User {
       #[key]
       id: Uuid,  // Primary key for identifying the entity
   }
-  #+END_SRC
+  ```
 
-- =@[unique_index]=: Creates a unique index on a field, allowing efficient lookup with guaranteed uniqueness
-  #+BEGIN_SRC rust
+- `@[unique_index]`: Creates a unique index on a field, allowing
+  efficient lookup with guaranteed uniqueness
+
+  ``` rust
   #[derive(Store)]
   struct User {
       #[key]
@@ -82,10 +92,12 @@ The =Store= derive supports several attributes to customize your data model:
       #[unique_index]
       username: String,  // 1:1 mapping
   }
-  #+END_SRC
+  ```
 
-- =@[index]=: Creates a non-unique index on a field, allowing multiple entities to share the same indexed value
-  #+BEGIN_SRC rust
+- `@[index]`: Creates a non-unique index on a field, allowing multiple
+  entities to share the same indexed value
+
+  ``` rust
   #[derive(Store)]
   struct User {
       #[key]
@@ -93,31 +105,34 @@ The =Store= derive supports several attributes to customize your data model:
       #[index]
       department: String,  // Multiple users can be in the same department
   }
-  #+END_SRC
+  ```
 
-- =@[migrate_from]=: Used for schema migrations, specifying the previous version of the struct
-  #+BEGIN_SRC rust
+- `@[migrate_from]`: Used for schema migrations, specifying the previous
+  version of the struct
+
+  ``` rust
   #[derive(Store)]
   #[migrate_from(OldUser)]
   struct User {
       // Migration logic implementation
   }
-  #+END_SRC
+  ```
 
-- =@[model_name]=: Used during migrations when the struct name changes
-  #+BEGIN_SRC rust
+- `@[model_name]`: Used during migrations when the struct name changes
+
+  ``` rust
   #[derive(Store)]
   #[model_name = "User"]  // Helps track model across versions
   struct UserV2 {
       // Struct definition
   }
-  #+END_SRC
+  ```
 
-** Usage
+## Usage
 
 Basic usage with various index types:
 
-#+BEGIN_SRC rust
+``` rust
 use ergokv::Store;
 use serde::{Serialize, Deserialize};
 use uuid::Uuid;
@@ -161,11 +176,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-#+END_SRC
+```
 
 Longer example:
 
-#+BEGIN_SRC rust
+``` rust
 use ergokv::Store;
 use serde::{Serialize, Deserialize};
 use uuid::Uuid;
@@ -207,13 +222,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-#+END_SRC
+```
 
-** Backup and Restore
+## Backup and Restore
 
-The =Store= derive automatically implements backup and restore functionality for your models:
+The `Store` derive automatically implements backup and restore
+functionality for your models:
 
-#+BEGIN_SRC rust
+``` rust
 use ergokv::Store;
 use serde::{Serialize, Deserialize};
 use uuid::Uuid;
@@ -244,21 +260,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-#+END_SRC
+```
 
-Backups are stored as line-delimited JSON files, with automatic timestamping:
-=User_1708644444.json=. Each line contains one serialized instance, making the
-backups human-readable and easy to process with standard tools.
+Backups are stored as line-delimited JSON files, with automatic
+timestamping: `User_1708644444.json`. Each line contains one serialized
+instance, making the backups human-readable and easy to process with
+standard tools.
 
-** Migrations
+## Migrations
 
-Store migrations are supported via the `#[migrate_from]` attribute. This allows you to evolve your data structures while keeping data integrity.
+Store migrations are supported via the \`#\[migrate<sub>from</sub>\]\`
+attribute. This allows you to evolve your data structures while keeping
+data integrity.
 
-*** Example
+### Example
 
-The recommended approach is to use private submodules for versioning models and always re-export the latest version:
+The recommended approach is to use private submodules for versioning
+models and always re-export the latest version:
 
-#+BEGIN_SRC rust
+``` rust
 mod models {
     mod v1 {
         #[derive(Store, Serialize, Deserialize)]
@@ -303,107 +323,111 @@ mod models {
     // Always re-export latest version
     pub use v2::User;
 }
-#+END_SRC
+```
 
-Note: The `#[model_name]` attribute is required when the struct name changes between versions (like UserV1 -> User above). This ensures ergokv can track the underlying model correctly across migrations.
+Note: The \`#\[model<sub>name</sub>\]\` attribute is required when the
+struct name changes between versions (like UserV1 -\> User above). This
+ensures ergokv can track the underlying model correctly across
+migrations.
 
 Run migrations:
 
-#+BEGIN_SRC rust
+``` rust
 User::ensure_migrations(&client).await?;
-#+END_SRC
+```
 
+## Running TiKV
 
-** Running TiKV
-
-*** For Development
+### For Development
 
 Use TiUP playground:
 
-#+BEGIN_SRC bash
+``` bash
 tiup playground
-#+END_SRC
+```
 
 This sets up a local TiKV cluster for testing.
 
-*** For Production
+### For Production
 
-1. Create a topology file (e.g., `topology.yaml`):
+1.  Create a topology file (e.g., \`topology.yaml\`):
 
-   #+BEGIN_SRC yaml
-   global:
-     user: "tidb"
-     ssh_port: 22
-     deploy_dir: "/tidb-deploy"
-     data_dir: "/tidb-data"
+    ``` yaml
+    global:
+      user: "tidb"
+      ssh_port: 22
+      deploy_dir: "/tidb-deploy"
+      data_dir: "/tidb-data"
 
-   pd_servers:
-     - host: 10.0.1.1
-     - host: 10.0.1.2
-     - host: 10.0.1.3
+    pd_servers:
+      - host: 10.0.1.1
+      - host: 10.0.1.2
+      - host: 10.0.1.3
 
-   tikv_servers:
-     - host: 10.0.1.4
-     - host: 10.0.1.5
-     - host: 10.0.1.6
+    tikv_servers:
+      - host: 10.0.1.4
+      - host: 10.0.1.5
+      - host: 10.0.1.6
 
-   tidb_servers:
-     - host: 10.0.1.7
-     - host: 10.0.1.8
-     - host: 10.0.1.9
-   #+END_SRC
+    tidb_servers:
+      - host: 10.0.1.7
+      - host: 10.0.1.8
+      - host: 10.0.1.9
+    ```
 
-2. Deploy the cluster:
+2.  Deploy the cluster:
 
-   #+BEGIN_SRC bash
-   tiup cluster deploy mytikvcluster 5.1.0 topology.yaml --user root -p
-   #+END_SRC
+    ``` bash
+    tiup cluster deploy mytikvcluster 5.1.0 topology.yaml --user root -p
+    ```
 
-3. Start the cluster:
+3.  Start the cluster:
 
-   #+BEGIN_SRC bash
-   tiup cluster start mytikvcluster
-   #+END_SRC
+    ``` bash
+    tiup cluster start mytikvcluster
+    ```
 
-
-** Testing
+## Testing
 
 To run tests, ensure you have TiUP installed and then use:
 
-#+BEGIN_SRC bash
+``` bash
 cargo test
-#+END_SRC
+```
 
 Tests will automatically start and stop a TiKV instance using TiUP.
 
 I will be honest with you, chief, I made one test and that's it.
 
-** License
+## License
 
 This project is licensed under the Fair License:
 
-#+BEGIN_QUOTE
-Copyright (c) 2024 Lukáš Hozda
+> Copyright (c) 2024 Lukáš Hozda
+>
+> Usage of the works is permitted provided that this instrument is
+> retained with the works, so that any entity that uses the works is
+> notified of this instrument.
+>
+> DISCLAIMER: THE WORKS ARE WITHOUT WARRANTY.
 
-Usage of the works is permitted provided that this instrument is retained with the works, so that any entity that uses the works is notified of this instrument.
-
-DISCLAIMER: THE WORKS ARE WITHOUT WARRANTY.
-#+END_QUOTE
-
-** Contributing
+## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
 There is a lot of things that could be improved:
+
 - Make ergokv support more KV stores
 - Improve documentation
-- Allow swapping the serialization format (currently we use CBOR via ciborium)
-- Let methods be generic (in the case of TiKV) over RawClient, Transaction and
-  TransactionClient
-- Add additional methods that retrieve multiple structures, to make it useful to e.g. fetch
-  entities like articles and all users (note that this can be done already by manually making
-  a sort of entity registry for yourself)
+- Allow swapping the serialization format (currently we use CBOR via
+  ciborium)
+- Let methods be generic (in the case of TiKV) over RawClient,
+  Transaction and TransactionClient
+- Add additional methods that retrieve multiple structures, to make it
+  useful to e.g. fetch entities like articles and all users (note that
+  this can be done already by manually making a sort of entity registry
+  for yourself)
 
-** GitHub Repository
+## GitHub Repository
 
-[[https://github.com/luciumagn/ergokv][github.com/luciumagn/ergokv]]
+[github.com/luciumagn/ergokv](https://github.com/luciumagn/ergokv)

@@ -14,6 +14,7 @@ mod version1 {
     pub struct User {
         #[key]
         pub id: Uuid,
+        #[unique_index]
         pub name: String,
         pub email: String,
     }
@@ -31,6 +32,7 @@ mod version2 {
     pub struct User {
         #[key]
         pub id: Uuid,
+        #[unique_index]
         pub first_name: String,
         pub last_name: String,
         pub email: String,

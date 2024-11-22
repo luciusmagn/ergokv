@@ -10,9 +10,12 @@ use uuid::Uuid;
 struct User {
     #[key]
     id: Uuid,
-    #[index]
+    #[unique_index]
     username: String,
+    #[index]
     email: String,
+    #[index]
+    department: String,
 }
 
 #[tokio::test]
@@ -27,11 +30,13 @@ async fn test_backup_restore() {
             id: Uuid::new_v4(),
             username: "alice".to_string(),
             email: "alice@example.com".to_string(),
+            department: "Engineering".to_string(),
         },
         User {
             id: Uuid::new_v4(),
             username: "bob".to_string(),
             email: "bob@example.com".to_string(),
+            department: "Engineering".to_string(),
         },
     ];
 
@@ -40,6 +45,21 @@ async fn test_backup_restore() {
     for user in &users {
         user.save(&mut txn).await.unwrap();
     }
+    txn.commit().await.unwrap();
+
+    // Verify index methods work
+    let mut txn = client.begin_optimistic().await.unwrap();
+    let alice_by_username = User::by_username("alice", &mut txn)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(alice_by_username, users[0]);
+
+    let users_in_engineering =
+        User::by_department("Engineering", &mut txn)
+            .await
+            .unwrap();
+    assert_eq!(users_in_engineering.len(), 2);
     txn.commit().await.unwrap();
 
     // Create backup directory
