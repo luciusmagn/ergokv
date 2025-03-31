@@ -230,7 +230,7 @@ fn generate_save_method(
 
                     // Read existing keys
                     let mut keys = if let Some(existing_keys_bytes) = txn.get(index_key.clone()).await? {
-                        ::ergokv::ciborium::de::from_reader(existing_keys_bytes.as_slice())
+                        ::ergokv::ciborium::de::from_reader_with_recursion_limit(existing_keys_bytes.as_slice(), 2048)
                             .map_err(|e| tikv_client::Error::StringError(format!("Failed to decode keys: {}", e)))?
                     } else {
                         Vec::new()
@@ -331,7 +331,7 @@ fn generate_delete_method(
 
                     // Read existing keys
                     if let Some(existing_keys_bytes) = txn.get(index_key.clone()).await? {
-                        let mut keys: Vec<#key_type> = ::ergokv::ciborium::de::from_reader(existing_keys_bytes.as_slice())
+                        let mut keys: Vec<#key_type> = ::ergokv::ciborium::de::from_reader_with_recursion_limit(existing_keys_bytes.as_slice(), 2048)
                             .map_err(|e| tikv_client::Error::StringError(format!("Failed to decode keys: {}", e)))?;
 
                         // Remove current key
@@ -406,7 +406,7 @@ fn generate_index_methods(
                                 .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct value: {e}")))?
                         );
                         if let Some(key_bytes) = client.get(index_key).await? {
-                            let key = ::ergokv::ciborium::de::from_reader(key_bytes.as_slice())
+                            let key = ::ergokv::ciborium::de::from_reader_with_recursion_limit(key_bytes.as_slice(), 2048)
                                 .map_err(|e| tikv_client::Error::StringError(format!("Failed to decode key: {}", e)))?;
 
                             Self::load(&key, client).await.map(Some)
@@ -429,7 +429,7 @@ fn generate_index_methods(
                                 .map_err(|e| tikv_client::Error::StringError(format!("Failed to encode struct value: {e}")))?
                         );
                         if let Some(keys_bytes) = client.get(index_key).await? {
-                            let keys: Vec<#key_type> = ::ergokv::ciborium::de::from_reader(keys_bytes.as_slice())
+                            let keys: Vec<#key_type> = ::ergokv::ciborium::de::from_reader_with_recursion_limit(keys_bytes.as_slice(), 2048)
                                 .map_err(|e| tikv_client::Error::StringError(format!("Failed to decode keys: {}", e)))?;
 
                             let mut results = Vec::new();
@@ -597,7 +597,7 @@ fn generate_ensure_migrations(
             let mut txn = client.begin_optimistic().await?;
 
             let migrations: Vec<String> = if let Some(data) = txn.get(migrations_key.as_bytes().to_vec()).await? {
-                ::ergokv::ciborium::de::from_reader(&data[..])
+                ::ergokv::ciborium::de::from_reader_with_recursion_limit(&data[..], 2048)
                     .map_err(|e| ::tikv_client::Error::StringError(format!("{e}")))?
             } else {
                 Vec::new()
@@ -670,7 +670,7 @@ fn generate_mutation_checks(
         quote! {
             let migrations_key = format!("{}:__migrations", Self::MODEL_NAME);
             let migrations: Vec<String> = if let Some(data) = txn.get(&migrations_key).await? {
-                ::ergokv::ciborium::de::from_reader(&data[..])?
+                ::ergokv::ciborium::de::from_reader_with_recursion_limit(&data[..], 2048)?
             } else {
                 Vec::new()
             };

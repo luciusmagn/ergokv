@@ -1,6 +1,6 @@
 [package]
 name = "ergokv"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2021"
 description = "Easily store and retrieve data from TiKV with a derive"
 license = "Fair"
@@ -11,7 +11,7 @@ documentation = "https://docs.rs/ergokv"
 strict-migrations = ["ergokv-macro/strict-migrations"]
 
 [dependencies]
-ergokv-macro = { version = "0.1.8", path = "ergokv-macro" }
+ergokv-macro = { version = "0.1.10", path = "ergokv-macro" }
 tikv-client = "0.3"
 ciborium = "0.2.2"
 which = "6.0.3"
