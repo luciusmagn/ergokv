@@ -146,7 +146,7 @@ fn generate_load_method(
                 );
                 let value = txn.get(key.clone()).await?
                     .ok_or_else(|| tikv_client::Error::StringError(key.clone()))?;
-                ::ergokv::ciborium::de::from_reader(value.as_slice())
+                ::ergokv::ciborium::de::from_reader_with_recursion_limit(value.as_slice(), 2048)
                     .map_err(|e| tikv_client::Error::StringError(format!("Failed to decode {}: {}", stringify!(#field_name), e)))?
             };
         }
